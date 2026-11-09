@@ -114,6 +114,8 @@ def main():
                     print(line.strip(), flush=True)
                     if '"velux_error"' in line:
                         return 1
+                    if '"velux_paired"' in line:
+                        return 0   # button was pressed before we started waiting
             print(f"Waiting for rear PAIR/RESET button press on {target} remote...", flush=True)
             deadline = time.time() + 120.0
             buf = ""

@@ -197,8 +197,11 @@ You can also interact with the XIAO MG24 directly over any serial terminal (`scr
 The firmware logic is covered by host-side unit tests that compile the real `firmware/app.c` against a fake radio, flash and CLI. You don't need the board or the Silicon Labs SDK, just a C compiler:
 
 ```bash
-cd tests/host && make test
+cd tests/host && make test                    # firmware (needs a C compiler)
+python3 -m unittest discover -s tests -v      # Home Assistant script (Python 3 only, macOS/Linux)
 ```
+
+The Python tests run `velux_ha_ctl.py` against a simulated board on a pseudo-terminal: command forwarding, JSON-only output for Home Assistant, pairing (including a button press that arrives immediately), pairing timeout, port locking between concurrent Home Assistant calls, and serial port discovery.
 
 They check frame bytes against frames from the hardware-verified firmware, the full transmit schedule (channels, 1000 µs beacon grid, command windows), over-the-air pairing at all 16 receiver phases, wall-switch counter sync, flash persistence and wear leveling, and CLI error handling.
 
