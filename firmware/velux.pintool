@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="ASCII"?>
+<device:XMLDevice xmi:version="2.0" xmlns:xmi="http://www.omg.org/XMI" xmlns:device="http://www.silabs.com/ss/hwconfig/document/device.ecore" name="pin_tool.EFR32MG24B220F1536IM48" partId="mcu.arm.efr32.mg24.efr32mg24b220f1536im48" contextId="com.silabs.sdk.stack.sisdk:2025.6.3._-511005113">
+  <mode name="DefaultMode">
+    <property object="DefaultMode" propertyId="mode.diagramLocation" value="100, 100"/>
+    <property object="MODEM" propertyId="ABModule.selectedRequirement" value="modem%T%SL_RAIL_UTIL_ANT_DIV%T%sl_rail_util_ant_div_config.h"/>
+    <property object="MODEM" propertyId="ABPeripheral.included" value="true"/>
+    <property object="PORTIO" propertyId="portio.usart0.enable.rx" value="Enabled"/>
+    <property object="PORTIO" propertyId="portio.usart0.enable.tx" value="Enabled"/>
+    <property object="PORTIO" propertyId="portio.usart0.location.rx" value="9"/>
+    <property object="PORTIO" propertyId="portio.usart0.location.tx" value="8"/>
+    <property object="PTI" propertyId="ABModule.selectedRequirement" value="pti%T%SL_RAIL_UTIL_PTI%T%sl_rail_util_pti_config.h"/>
+    <property object="PTI" propertyId="ABPeripheral.included" value="true"/>
+    <property object="USART0" propertyId="ABModule.selectedRequirement" value="usart%T%SL_IOSTREAM_USART_VCOM%T%sl_iostream_usart_vcom_config.h"/>
+    <property object="USART0" propertyId="ABPeripheral.included" value="true"/>
+  </mode>
+  <modeTransition>
+    <property object="RESET &#x2192; DefaultMode" propertyId="modeTransition.source" value="RESET"/>
+    <property object="RESET &#x2192; DefaultMode" propertyId="modeTransition.target" value="DefaultMode"/>
+  </modeTransition>
+</device:XMLDevice>

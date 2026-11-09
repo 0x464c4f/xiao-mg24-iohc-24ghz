@@ -1,0 +1,48 @@
+# ==============================================================================
+# Home Assistant Configuration for XIAO MG24 2.4 GHz Velux Blind & Skylight
+# ==============================================================================
+# 1. Copy `velux_ha_ctl.py` to `/config/velux_ha_ctl.py` on your Home Assistant
+#    instance and make it executable (`chmod +x /config/velux_ha_ctl.py`).
+# 2. Paste the block below into your `/config/configuration.yaml` and restart
+#    Home Assistant.
+
+command_line:
+  # ----------------------------------------------------------------------------
+  # 1. Solar Blind (0-100% Position + Open / Close / Stop)
+  # ----------------------------------------------------------------------------
+  - cover:
+      name: "Velux Solar Blind"
+      unique_id: velux_24ghz_solar_blind
+      device_class: blind
+      command_open: "python3 /config/velux_ha_ctl.py blind open"
+      command_close: "python3 /config/velux_ha_ctl.py blind close"
+      command_stop: "python3 /config/velux_ha_ctl.py blind stop"
+      command_state: "python3 /config/velux_ha_ctl.py blind status"
+      value_template: "{{ value_json.position }}"
+      set_position:
+        action: shell_command.velux_blind_set_pos
+        data:
+          position: "{{ position }}"
+      scan_interval: 60
+
+  # ----------------------------------------------------------------------------
+  # 2. Solar Skylight (0-100% Position + Open / Close / Stop)
+  # ----------------------------------------------------------------------------
+  - cover:
+      name: "Velux Solar Skylight"
+      unique_id: velux_24ghz_solar_skylight
+      device_class: window
+      command_open: "python3 /config/velux_ha_ctl.py skylight open"
+      command_close: "python3 /config/velux_ha_ctl.py skylight close"
+      command_stop: "python3 /config/velux_ha_ctl.py skylight stop"
+      command_state: "python3 /config/velux_ha_ctl.py skylight status"
+      value_template: "{{ value_json.position }}"
+      set_position:
+        action: shell_command.velux_skylight_set_pos
+        data:
+          position: "{{ position }}"
+      scan_interval: 60
+
+shell_command:
+  velux_blind_set_pos: "python3 /config/velux_ha_ctl.py blind pos {{ position }}"
+  velux_skylight_set_pos: "python3 /config/velux_ha_ctl.py skylight pos {{ position }}"

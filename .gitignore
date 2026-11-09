@@ -1,0 +1,35 @@
+# Secret & personal device configurations (NEVER commit real keys!)
+firmware/velux_secrets.h
+velux_secrets.h
+*seq.txt
+*.key
+
+# Raw RF captures and logs
+*.bin
+*.log
+*.raw
+*.iq
+*.wav
+
+# Compiled firmware binaries & Simplicity Studio build artifacts
+*.axf
+*.elf
+*.hex
+*.s37
+*.out
+*.o
+*.d
+*.a
+*.map
+GNU ARM*/
+Release/
+Debug/
+simplicity_sdk*/
+trashed_modified_files/
+
+# Python / OS artifacts
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/
+.settings/

@@ -1,0 +1,34 @@
+xiao-mg24-velux-iohc
+Copyright 2026 Contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+================================================================================
+Third-Party Attributions & Credits
+================================================================================
+
+1. Google Antigravity (AGY) & Gemini
+   Signal analysis, EFR32MG24 hardware register discovery (Z2 x Z8 DSSS phase
+   group inversion, 0x56 SFD lock, FCD0 CRC override), two-stage LPM wakeup
+   protocol timing, embedded firmware architecture, and Home Assistant bridge
+   tooling were developed in pair-programming collaboration with Google
+   Antigravity (AGY) powered by Gemini.
+
+2. rspaargaren/iohomecontrol & rspaargaren/iown-homecontrol-esp32sx1276
+   The 1-Way payload checksum / IV construction algorithm (`iohc_checksum_step`
+   and `iohc_create_1w_hmac` in `firmware/app.c`) is adapted from the
+   open-source documentation and reference implementation by Robin Spaargaren
+   and contributors:
+   - https://github.com/rspaargaren/iohomecontrol
+   - https://github.com/rspaargaren/iown-homecontrol-esp32sx1276
+   Licensed under the Apache License, Version 2.0.
+
+3. Silicon Laboratories Inc. (Simplicity SDK Template Headers & Configs)
+   Files in `firmware/app.h`, `firmware/config/sl_device_init_hfxo_config.h`,
+   and `firmware/autogen_patches/` are derived from Silicon Laboratories Inc.
+   project templates licensed under the Zlib License (SPDX-License-Identifier: Zlib).
+   Original copyright notices are preserved in those files.
