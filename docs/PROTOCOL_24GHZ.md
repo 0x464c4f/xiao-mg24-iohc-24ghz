@@ -25,10 +25,12 @@ Unlike European `io-homecontrol` devices (which operate on three 868 MHz channel
 
 When an `EFR32MG24` receiver is configured with the standard IEEE 802.15.4 32-chip table (`dsss_chipping_code = 0x744AC39B`), incoming 2.4 GHz Velux packets lock at one of 16 carrier/timing phase states $P \in \{0..15\}$. Because the 32-chip cyclic shift + I/Q inversion forms the mathematical group $\mathbb{Z}_2 \times \mathbb{Z}_8$, each received 4-bit symbol nibble $n$ is transformed relative to the preamble symbol $P$ by:
 
-$$\text{inv\_nibble}(n, P) = \bigl((n + 8 - (P \bmod 8)) \bmod 8\bigr) \;\Big|\; \bigl((n \oplus P) \ \& \ 8\bigr)$$
+```c
+inv_nibble(n, P) = ((n + 8 - (P % 8)) % 8) | ((n ^ P) & 8)
+```
 
 - **During RX (`dump_fifo_stream_over_serial` in [`firmware/app.c`](../firmware/app.c)):**
-  - When $P = 0$, the on-air SFD byte `0x56` appears in the raw demodulator stream as `0x6A` (since $\text{inv\_nibble}(0\text{xA}, 0) = 6$ and $\text{inv\_nibble}(0\text{x6}, 0) = 5$, yielding byte `0x56`).
+  - When $P = 0$, the on-air SFD byte `0x56` appears in the raw demodulator stream as `0x6A` (since `inv_nibble(0x0A, 0) == 6` and `inv_nibble(0x06, 0) == 5`, yielding byte `0x56`).
   - By configuring `MODEM_NS->SYNC0 = 0x6A` and `SYNC1 = 0x56` with `DUALSYNC` enabled in FIFO stream mode, and scanning across all $P \in \{0..15\}$, the XIAO MG24 achieves 100% packet reception across all phase locks.
 - **During TX (`transmit_velux_burst` in [`firmware/app.c`](../firmware/app.c)):**
   - Setting `MODEM_NS->SYNC0 = 0x56` (`0xB8014078 = 0x56`) transmits the exact `0x00 00 00 00 56` preamble + SFD expected by Velux actuators.
@@ -92,7 +94,7 @@ Hex:   01 69 6f f6  [CB2] 00 00 3f  [SRC_3B]  00 01 61 [POS] 00 00 00  [SEQ_N+1]
   - `0x00` (`0`): **Open (`100%` in Home Assistant)**
   - `0xC8` (`200`): **Close (`0%` in Home Assistant)**
   - `0xD2` (`210`): **Stop / My Position**
-  - `0x01 .. 0xC7` (`1 .. 199`): **Exact intermediate position** ($\text{main0} = 200 - 2 \times \text{HA\_pct}$)
+  - `0x01 .. 0xC7` (`1 .. 199`): **Exact intermediate position** (`main0 = 200 - 2 * ha_percent`)
 
 > **Why Sequence Reuse Across Multi-Channel Bursts Is Critical:**
 > Each Stage (`30B` then `28B`) is transmitted across the 2.4 GHz channels (`2425 MHz`, `2450 MHz`, `2475 MHz`). All channel repetitions within a single button press **must reuse the exact same `(seq = N, seq = N + 1)` pair**. If a controller increments the sequence number to `(N + 2, N + 3)` on a retry ~1 second later while the skylight motor is already moving, the actuator interprets the new sequence number as a *second button press while in motion*—which triggers an immediate **STOP**!
