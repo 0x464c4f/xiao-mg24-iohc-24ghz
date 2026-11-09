@@ -57,7 +57,9 @@ static void velux_on_rx_valid_frame(const uint8_t *psdu, uint16_t len);
 // Channels: base 2425 MHz, 5 MHz spacing -> 2425 / 2450 / 2475 MHz
 static const uint16_t VELUX_CHANNELS[3] = { 0, 5, 10 };
 
-// Direct register addresses (EFR32xG24 non-secure aliases)
+// Direct register addresses (EFR32xG24 non-secure aliases).
+// Host unit tests (tests/host) provide their own definitions.
+#ifndef VELUX_HOST_TEST
 #define REG_FRC_FCD0      (*(volatile uint32_t *)0xB8004108UL)
 #define REG_FRC_FCD1      (*(volatile uint32_t *)0xB800410CUL)
 #define REG_FRC_FCD2      (*(volatile uint32_t *)0xB8004110UL)
@@ -66,6 +68,7 @@ static const uint16_t VELUX_CHANNELS[3] = { 0, 5, 10 };
 #define REG_MODEM_SYNC0   (*(volatile uint32_t *)0xB8014078UL)
 #define REG_MODEM_SYNC1   (*(volatile uint32_t *)0xB801407CUL)
 #define REG_MODEM_TIMING  (*(volatile uint32_t *)0xB8014080UL)
+#endif
 
 // -----------------------------------------------------------------------------
 // RX capture state
@@ -695,9 +698,11 @@ static void iohc_decrypt_1w_key(const uint8_t node_addr[3], const uint8_t enc_ke
 // Non-Volatile Flash Storage (Page at 0x0817C000: 127 wear-leveled device slots
 // + Slot 127 at 0x0817FFC0 reserved for optional runtime 1-Way transfer key)
 // -----------------------------------------------------------------------------
+#ifndef VELUX_NVM_FLASH_PAGE_ADDR
 #define VELUX_NVM_FLASH_PAGE_ADDR   0x0817C000UL
+#endif
 #define VELUX_NVM_SLOT_COUNT        127U          // Slots 0..126 for wear-leveled state
-#define VELUX_NVM_TK_SLOT_ADDR      (0x0817C000UL + 127U * 64U)
+#define VELUX_NVM_TK_SLOT_ADDR      (VELUX_NVM_FLASH_PAGE_ADDR + 127U * 64U)
 #define VELUX_NVM_MAGIC             0x564C5832UL  // "VLX2"
 #define VELUX_TK_MAGIC              0x564C584BUL  // "VLXK"
 
@@ -730,6 +735,7 @@ static uint32_t       g_velux_nvm_next_slot = 0;
 static bool           g_velux_pair_mode = false;
 static int            g_velux_pair_target = 1; // 0=blind, 1=skylight
 
+#ifndef VELUX_HOST_TEST
 static void velux_flash_wait_ready(void)
 {
   uint32_t timeout = 2000000UL;
@@ -738,14 +744,14 @@ static void velux_flash_wait_ready(void)
   }
 }
 
-static void velux_flash_erase_page(uint32_t page_addr)
+static void velux_flash_erase_page(uintptr_t page_addr)
 {
   CORE_DECLARE_IRQ_STATE;
   CORE_ENTER_CRITICAL();
   CMU->CLKEN1_SET = CMU_CLKEN1_MSC;
   MSC->LOCK = MSC_LOCK_LOCKKEY_UNLOCK;
   MSC->WRITECTRL_SET = MSC_WRITECTRL_WREN;
-  MSC->ADDRB = page_addr;
+  MSC->ADDRB = (uint32_t)page_addr;
   MSC->WRITECMD = MSC_WRITECMD_ERASEPAGE;
   velux_flash_wait_ready();
   velux_flash_wait_ready();
@@ -754,7 +760,7 @@ static void velux_flash_erase_page(uint32_t page_addr)
   CORE_EXIT_CRITICAL();
 }
 
-static void velux_flash_write_64b(uint32_t slot_addr, const void *slot64)
+static void velux_flash_write_64b(uintptr_t slot_addr, const void *slot64)
 {
   const uint32_t *words = (const uint32_t *)slot64;
   uint32_t num_words = 64U / 4U;
@@ -767,7 +773,7 @@ static void velux_flash_write_64b(uint32_t slot_addr, const void *slot64)
 
   for (uint32_t i = 0; i < num_words; i++) {
     velux_flash_wait_ready();
-    MSC->ADDRB = slot_addr + (i * 4U);
+    MSC->ADDRB = (uint32_t)(slot_addr + (i * 4U));
     MSC->WDATA = words[i];
     velux_flash_wait_ready();
   }
@@ -777,6 +783,8 @@ static void velux_flash_write_64b(uint32_t slot_addr, const void *slot64)
   MSC->LOCK = MSC_LOCK_LOCKKEY_LOCK;
   CORE_EXIT_CRITICAL();
 }
+
+#endif // VELUX_HOST_TEST (flash driver)
 
 static void velux_tk_write_if_needed(void)
 {
@@ -806,7 +814,7 @@ static void velux_nvm_save(void)
     velux_tk_write_if_needed();
   }
 
-  uint32_t slot_addr = VELUX_NVM_FLASH_PAGE_ADDR + g_velux_nvm_next_slot * sizeof(VeluxNvmSlot_t);
+  uintptr_t slot_addr = VELUX_NVM_FLASH_PAGE_ADDR + g_velux_nvm_next_slot * sizeof(VeluxNvmSlot_t);
   velux_flash_write_64b(slot_addr, &g_velux_nvm);
   g_velux_nvm_next_slot++;
 }

@@ -192,6 +192,18 @@ You can also interact with the XIAO MG24 directly over any serial terminal (`scr
 
 ---
 
+## Running the Tests
+
+The firmware logic is covered by host-side unit tests that compile the real `firmware/app.c` against a fake radio, flash and CLI. You don't need the board or the Silicon Labs SDK, just a C compiler:
+
+```bash
+cd tests/host && make test
+```
+
+They check frame bytes against frames from the hardware-verified firmware, the full transmit schedule (channels, 1000 µs beacon grid, command windows), over-the-air pairing at all 16 receiver phases, wall-switch counter sync, flash persistence and wear leveling, and CLI error handling.
+
+---
+
 ## Technical Deep-Dive: How the 2.4 GHz PHY & Protocol Work
 
 Curious how Velux's 2.4 GHz O-QPSK physical layer, `Z2 × Z8` DSSS chip inversion, `0x56` sync word, and two-stage `30B Non-LPM` + `28B LPM` wake-up sequence work under the hood?

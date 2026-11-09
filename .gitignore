@@ -36,3 +36,7 @@ __pycache__/
 
 # Private drafts
 docs/HOME_ASSISTANT_ARTICLE_DRAFT.md
+
+# Host test binary
+tests/host/test_firmware
+tests/host/*.dSYM/
