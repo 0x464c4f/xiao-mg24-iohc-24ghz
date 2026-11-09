@@ -33,3 +33,6 @@ __pycache__/
 .DS_Store
 .vscode/
 .settings/
+
+# Private drafts
+docs/HOME_ASSISTANT_ARTICLE_DRAFT.md

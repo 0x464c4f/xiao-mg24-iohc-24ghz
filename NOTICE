@@ -28,7 +28,7 @@ Third-Party Attributions & Credits
    Licensed under the Apache License, Version 2.0.
 
 3. Silicon Laboratories Inc. (Simplicity SDK Template Headers & Configs)
-   Files in `firmware/app.h`, `firmware/config/sl_device_init_hfxo_config.h`,
+   Files in `firmware/app.h`, `firmware/main.c`, `firmware/config/sl_device_init_hfxo_config.h`,
    and `firmware/autogen_patches/` are derived from Silicon Laboratories Inc.
    project templates licensed under the Zlib License (SPDX-License-Identifier: Zlib).
    Original copyright notices are preserved in those files.

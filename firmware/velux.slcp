@@ -13,8 +13,6 @@ filter:
   value: [RAIL]
 package: rail_sdk_sample_applications
 quality: production
-readme:
-- {path: readme.md}
 source:
 - {path: main.c}
 - {path: app.c}

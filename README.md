@@ -59,11 +59,12 @@ This project turns a single **~\$10 Seeed Studio XIAO MG24** (`Silicon Labs EFR3
 1. Plug your **Seeed Studio XIAO MG24** into your computer via USB-C.
 2. In Simplicity Studio v5, create a new project for target part **`EFR32MG24B220F1536IM48`** using the **`RAIL - SoC RAILtest`** (`rail_soc_railtest`) example template (or import [`firmware/velux.slcp`](firmware/velux.slcp)).
 3. Copy the files from this repository's [`firmware/`](firmware/) folder into your Simplicity Studio project:
-   - [`firmware/app.c`](firmware/app.c) $\rightarrow$ `<project>/app.c`
-   - [`firmware/app.h`](firmware/app.h) $\rightarrow$ `<project>/app.h`
-   - [`firmware/config/sl_device_init_hfxo_config.h`](firmware/config/sl_device_init_hfxo_config.h) $\rightarrow$ `<project>/config/sl_device_init_hfxo_config.h`
-   - [`firmware/config/rail/radio_settings.radioconf`](firmware/config/rail/radio_settings.radioconf) $\rightarrow$ `<project>/config/rail/radio_settings.radioconf`
-   - [`firmware/autogen_patches/rail_config.c`](firmware/autogen_patches/rail_config.c) $\rightarrow$ `<project>/autogen/rail_config.c`
+   - [`firmware/app.c`](firmware/app.c) → `<project>/app.c`
+   - [`firmware/app.h`](firmware/app.h) → `<project>/app.h`
+   - [`firmware/main.c`](firmware/main.c) → `<project>/main.c` (unchanged Silicon Labs template, only needed if you import `velux.slcp`)
+   - [`firmware/config/sl_device_init_hfxo_config.h`](firmware/config/sl_device_init_hfxo_config.h) → `<project>/config/sl_device_init_hfxo_config.h`
+   - [`firmware/config/rail/radio_settings.radioconf`](firmware/config/rail/radio_settings.radioconf) → `<project>/config/rail/radio_settings.radioconf`
+   - [`firmware/autogen_patches/rail_config.c`](firmware/autogen_patches/rail_config.c) → `<project>/autogen/rail_config.c`
 4. Ensure the `velux` CLI command is registered in `<project>/autogen/sl_cli_command_table.c` (see [`firmware/autogen_patches/sl_cli_command_table_velux.inc`](firmware/autogen_patches/sl_cli_command_table_velux.inc)).
 
 > [!IMPORTANT]
@@ -136,10 +137,10 @@ Because all keys and rolling sequence counters live in the XIAO MG24's internal 
 
 ### 3.1. Proxmox VE USB Passthrough (If Running HAOS in a VM)
 1. Plug the XIAO MG24 into a USB port on your Proxmox host.
-2. In the Proxmox Web UI, select your **Home Assistant VM** $\rightarrow$ **Hardware** $\rightarrow$ **Add** $\rightarrow$ **USB Device**.
+2. In the Proxmox Web UI, select your **Home Assistant VM** → **Hardware** → **Add** → **USB Device**.
 3. Choose **Use USB Vendor/Device ID** and select **`Seeed Studio XIAO MG24 (2886:0062)`** (or CMSIS-DAP).
 4. Click **Add** (Proxmox hot-plugs USB devices into Home Assistant OS immediately—no VM reboot required).
-5. In Home Assistant, go to **Settings $\rightarrow$ System $\rightarrow$ Hardware $\rightarrow$ All Hardware** and search for `ttyACM`—you will see `/dev/ttyACM0` (or `/dev/ttyACM1`) and `/dev/serial/by-id/usb-Seeed_Studio_XIAO_MG24_...`.
+5. In Home Assistant, go to **Settings → System → Hardware → All Hardware** and search for `ttyACM`—you will see `/dev/ttyACM0` (or `/dev/ttyACM1`) and `/dev/serial/by-id/usb-Seeed_Studio_XIAO_MG24_...`.
 
 ### 3.2. Install `velux_ha_ctl.py` in Home Assistant
 1. Copy [`homeassistant/velux_ha_ctl.py`](homeassistant/velux_ha_ctl.py) into your Home Assistant `/config/` directory (`/config/velux_ha_ctl.py`).
@@ -154,44 +155,17 @@ Because all keys and rolling sequence counters live in the XIAO MG24's internal 
    ```
 
 ### 3.3. Add Cover Entities to `/config/configuration.yaml`
-Copy the contents of [`homeassistant/configuration.yaml.example`](homeassistant/configuration.yaml.example) into your `/config/configuration.yaml` and restart Home Assistant:
+Copy the contents of [`homeassistant/configuration.yaml.example`](homeassistant/configuration.yaml.example) into your `/config/configuration.yaml` (merge with any existing `command_line:`, `shell_command:` or `template:` sections) and restart Home Assistant.
 
-```yaml
-command_line:
-  - cover:
-      name: "Velux Solar Blind"
-      unique_id: velux_24ghz_solar_blind
-      device_class: blind
-      command_open: "python3 /config/velux_ha_ctl.py blind open"
-      command_close: "python3 /config/velux_ha_ctl.py blind close"
-      command_stop: "python3 /config/velux_ha_ctl.py blind stop"
-      command_state: "python3 /config/velux_ha_ctl.py blind status"
-      value_template: "{{ value_json.position }}"
-      set_position:
-        action: shell_command.velux_blind_set_pos
-        data:
-          position: "{{ position }}"
-      scan_interval: 60
+It creates:
 
-  - cover:
-      name: "Velux Solar Skylight"
-      unique_id: velux_24ghz_solar_skylight
-      device_class: window
-      command_open: "python3 /config/velux_ha_ctl.py skylight open"
-      command_close: "python3 /config/velux_ha_ctl.py skylight close"
-      command_stop: "python3 /config/velux_ha_ctl.py skylight stop"
-      command_state: "python3 /config/velux_ha_ctl.py skylight status"
-      value_template: "{{ value_json.position }}"
-      set_position:
-        action: shell_command.velux_skylight_set_pos
-        data:
-          position: "{{ position }}"
-      scan_interval: 60
+| Entity | Purpose |
+| :--- | :--- |
+| `cover.velux_solar_blind` | Open / close / stop + 0–100 % position slider |
+| `cover.velux_solar_skylight` | Open / close / stop + 0–100 % position slider |
+| `sensor.velux_blind_position`, `sensor.velux_skylight_position` | Last known position reported by the XIAO MG24 (also updated when you use the wall switch) |
 
-shell_command:
-  velux_blind_set_pos: "python3 /config/velux_ha_ctl.py blind pos {{ position }}"
-  velux_skylight_set_pos: "python3 /config/velux_ha_ctl.py skylight pos {{ position }}"
-```
+The covers are [template covers](https://www.home-assistant.io/integrations/template/) that call `velux_ha_ctl.py` via `shell_command`, because the `command_line` cover integration has no position support. `velux_ha_ctl.py` locks the serial port, so overlapping commands from automations are queued instead of colliding.
 
 ---
 
@@ -209,8 +183,10 @@ You can also interact with the XIAO MG24 directly over any serial terminal (`scr
 | `velux <blind\|skylight> open` | Open (`0x00` / HA `100%`) |
 | `velux <blind\|skylight> close` | Close (`0xC8` / HA `0%`) |
 | `velux <blind\|skylight> stop` | Stop (`0xD2`) |
+| `velux <blind\|skylight> vent` | Move to 50 % |
 | `velux <blind\|skylight> pos <0..100>` | Move to exact percentage (`0` = closed, `100` = open) |
-| `velux setkey <blind\|skylight> <32-hex> <6-hex>` | Manually set 16-byte device key and 3-byte address |
+| `velux <blind\|skylight> status` | Print JSON state for one device (used by Home Assistant) |
+| `velux setkey <blind\|skylight> <32-hex> [6-hex]` | Manually set 16-byte device key and (optionally) 3-byte address |
 | `velux setseq <blind\|skylight> <seq>` | Manually set 16-bit rolling sequence counter |
 | `velux reset_nvm` | Erase Flash NVM (`0x0817C000`) and clear all paired keys |
 

@@ -25,6 +25,7 @@ import os
 import sys
 import time
 import glob
+import fcntl
 import select
 import termios
 
@@ -50,6 +51,8 @@ def find_serial_port():
 
 def open_serial(port):
     fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    # Serialize access: HA may poll status while a command is running
+    fcntl.flock(fd, fcntl.LOCK_EX)
     attrs = termios.tcgetattr(fd)
     attrs[0] = 0
     attrs[1] = 0

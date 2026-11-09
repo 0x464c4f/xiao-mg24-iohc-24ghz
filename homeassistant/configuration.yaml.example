@@ -1,48 +1,79 @@
 # ==============================================================================
-# Home Assistant Configuration for XIAO MG24 2.4 GHz Velux Blind & Skylight
+# Home Assistant configuration for the XIAO MG24 2.4 GHz blind & skylight
 # ==============================================================================
-# 1. Copy `velux_ha_ctl.py` to `/config/velux_ha_ctl.py` on your Home Assistant
-#    instance and make it executable (`chmod +x /config/velux_ha_ctl.py`).
-# 2. Paste the block below into your `/config/configuration.yaml` and restart
-#    Home Assistant.
+# 1. Copy `velux_ha_ctl.py` to `/config/velux_ha_ctl.py`.
+# 2. Paste the blocks below into `/config/configuration.yaml`
+#    (merge with existing `command_line:`, `shell_command:`, `template:` keys).
+# 3. Restart Home Assistant.
+#
+# This creates `cover.velux_solar_blind` and `cover.velux_solar_skylight` with
+# open / close / stop and a 0-100 % position slider.
 
+# Position sensors (last known position stored on the XIAO MG24)
 command_line:
-  # ----------------------------------------------------------------------------
-  # 1. Solar Blind (0-100% Position + Open / Close / Stop)
-  # ----------------------------------------------------------------------------
-  - cover:
-      name: "Velux Solar Blind"
-      unique_id: velux_24ghz_solar_blind
-      device_class: blind
-      command_open: "python3 /config/velux_ha_ctl.py blind open"
-      command_close: "python3 /config/velux_ha_ctl.py blind close"
-      command_stop: "python3 /config/velux_ha_ctl.py blind stop"
-      command_state: "python3 /config/velux_ha_ctl.py blind status"
+  - sensor:
+      name: "Velux Blind Position"
+      unique_id: velux_24ghz_blind_position
+      command: "python3 /config/velux_ha_ctl.py blind status"
       value_template: "{{ value_json.position }}"
-      set_position:
-        action: shell_command.velux_blind_set_pos
-        data:
-          position: "{{ position }}"
-      scan_interval: 60
-
-  # ----------------------------------------------------------------------------
-  # 2. Solar Skylight (0-100% Position + Open / Close / Stop)
-  # ----------------------------------------------------------------------------
-  - cover:
-      name: "Velux Solar Skylight"
-      unique_id: velux_24ghz_solar_skylight
-      device_class: window
-      command_open: "python3 /config/velux_ha_ctl.py skylight open"
-      command_close: "python3 /config/velux_ha_ctl.py skylight close"
-      command_stop: "python3 /config/velux_ha_ctl.py skylight stop"
-      command_state: "python3 /config/velux_ha_ctl.py skylight status"
+      unit_of_measurement: "%"
+      scan_interval: 300
+  - sensor:
+      name: "Velux Skylight Position"
+      unique_id: velux_24ghz_skylight_position
+      command: "python3 /config/velux_ha_ctl.py skylight status"
       value_template: "{{ value_json.position }}"
-      set_position:
-        action: shell_command.velux_skylight_set_pos
-        data:
-          position: "{{ position }}"
-      scan_interval: 60
+      unit_of_measurement: "%"
+      scan_interval: 300
 
 shell_command:
-  velux_blind_set_pos: "python3 /config/velux_ha_ctl.py blind pos {{ position }}"
-  velux_skylight_set_pos: "python3 /config/velux_ha_ctl.py skylight pos {{ position }}"
+  velux_cmd: "python3 /config/velux_ha_ctl.py {{ device }} {{ action }}"
+  velux_pos: "python3 /config/velux_ha_ctl.py {{ device }} pos {{ position | int }}"
+
+template:
+  - cover:
+      - name: "Velux Solar Blind"
+        unique_id: velux_24ghz_solar_blind
+        device_class: blind
+        position: "{{ states('sensor.velux_blind_position') | int(0) }}"
+        open_cover:
+          - action: shell_command.velux_cmd
+            data: { device: blind, action: open }
+          - action: homeassistant.update_entity
+            target: { entity_id: sensor.velux_blind_position }
+        close_cover:
+          - action: shell_command.velux_cmd
+            data: { device: blind, action: close }
+          - action: homeassistant.update_entity
+            target: { entity_id: sensor.velux_blind_position }
+        stop_cover:
+          - action: shell_command.velux_cmd
+            data: { device: blind, action: stop }
+        set_cover_position:
+          - action: shell_command.velux_pos
+            data: { device: blind, position: "{{ position }}" }
+          - action: homeassistant.update_entity
+            target: { entity_id: sensor.velux_blind_position }
+
+      - name: "Velux Solar Skylight"
+        unique_id: velux_24ghz_solar_skylight
+        device_class: window
+        position: "{{ states('sensor.velux_skylight_position') | int(0) }}"
+        open_cover:
+          - action: shell_command.velux_cmd
+            data: { device: skylight, action: open }
+          - action: homeassistant.update_entity
+            target: { entity_id: sensor.velux_skylight_position }
+        close_cover:
+          - action: shell_command.velux_cmd
+            data: { device: skylight, action: close }
+          - action: homeassistant.update_entity
+            target: { entity_id: sensor.velux_skylight_position }
+        stop_cover:
+          - action: shell_command.velux_cmd
+            data: { device: skylight, action: stop }
+        set_cover_position:
+          - action: shell_command.velux_pos
+            data: { device: skylight, position: "{{ position }}" }
+          - action: homeassistant.update_entity
+            target: { entity_id: sensor.velux_skylight_position }
