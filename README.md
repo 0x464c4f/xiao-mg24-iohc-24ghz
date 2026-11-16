@@ -30,10 +30,9 @@ This project turns a single **~\$10 Seeed Studio XIAO MG24** (`Silicon Labs EFR3
 - **100% Self-Contained On-Chip Firmware:**
   - Runs directly on the `EFR32MG24B220F1536IM48` on a Seeed Studio XIAO MG24.
   - Performs AES-128 ECB encryption, 1-Way `io-homecontrol` MAC generation, software CRC-16/KERMIT (`0x8408` reflected), and microsecond-accurate `1000.0 µs` LPM wake-up beacon trains (`147 ms` LPM + `47 ms` Non-LPM) across all three 2.4 GHz channels (`2425 / 2450 / 2475 MHz`).
-- **One-Command Over-the-Air Remote Pairing (`velux pair`):**
-  - Run `velux pair blind` or `velux pair skylight` and press the recessed **PAIR** button on the back of your `KLI 311` / `KLI 312` remote for 1 second.
-  - The XIAO MG24 captures the `34-byte` (`0x30`) key-transfer broadcast over the air, unwraps the device's 16-byte Master Key on-chip, learns its 3-byte source address and rolling counter, and saves everything to internal Flash NVM.
-  - Because the XIAO MG24 clones your remote's address and syncs rolling counters when it hears your wall switch transmit, **your physical wall switches continue working alongside Home Assistant**.
+- **Two Flexible Pairing Modes (`pair` & `pair_tx`):**
+  - **Clone an existing 1-Way remote (`velux pair <blind|skylight>`):** Press the recessed **PAIR** button on the back of your `KLI 311` / `KLI 312` remote for 1 second. The XIAO MG24 captures the `34-byte` (`0x30`) key-transfer broadcast over the air, unwraps the device's 16-byte Master Key on-chip, learns its 3-byte source address and rolling counter, and saves everything to internal Flash NVM so **your physical wall switches continue working alongside Home Assistant**.
+  - **Pair directly to the motor with no remote needed (`velux pair_tx <blind|skylight>`):** Put the skylight/blind motor into pairing mode (via the physical **RESET / PAIR** button on the motor or via a `KLR 200` touchscreen's *New product / Copy control* menu) and run `pair_tx`. The XIAO MG24 generates a fresh random virtual remote address and AES-128 key on-chip and broadcasts the `34-byte` (`0x30`) key-transfer burst directly to the motor.
 - **Wear-Leveled Internal Flash Persistence (`0x0817C000`):**
   - Paired keys, device addresses, rolling sequence numbers, and last-known `0–100%` positions survive power loss and reboots using a 127-slot wear-leveled log in internal Flash.
 - **Zero-Dependency Home Assistant Bridge ([`homeassistant/velux_ha_ctl.py`](homeassistant/velux_ha_ctl.py)):**
@@ -46,7 +45,7 @@ This project turns a single **~\$10 Seeed Studio XIAO MG24** (`Silicon Labs EFR3
 1. **Seeed Studio XIAO MG24** (or XIAO MG24 Sense) — based on the Silicon Labs `EFR32MG24B220F1536IM48` SoC (~\$10 USD).
    - Uses the onboard ceramic antenna by default (`PB05 = HIGH`, `PB04 = LOW`), or an external 2.4 GHz U.FL antenna.
 2. **USB-C Data Cable** connected to your Home Assistant host (or Proxmox server with USB passthrough).
-3. **Your existing 2.4 GHz Velux Remote (`KLI 310 / 311 / 312`)** to pair from.
+3. *(Optional)* Your existing 2.4 GHz Velux Remote (`KLI 310 / 311 / 312`) if you want to clone it with `velux pair` (or use `velux pair_tx` to pair directly with the motor if you have no remote or use a `KLR 200`).
 
 ---
 
@@ -95,7 +94,11 @@ python3 homeassistant/velux_ha_ctl.py set_transfer_key <32-HEX-CHARS-FROM-IOHOME
 
 *(Alternatively, if you already know your device's 16-byte key and 3-byte address, you can load it directly via `velux setkey blind <32-hex-key> <6-hex-addr>` without needing the transfer key).*
 
-### 2.2. Pair Your Blind & Skylight Remotes Over-the-Air
+### 2.2. Pair Your Devices
+
+You can pair either by **cloning an existing 1-Way remote** (`pair`) or **pairing the XIAO MG24 directly to the motor with no remote needed** (`pair_tx`).
+
+#### Option A: Clone Your Existing `KLI 310 / 311 / 312` Wall Switch (`pair`, Keeps Wall Switch Working)
 1. Put the XIAO MG24 into pairing listen mode for `blind` or `skylight`:
    ```bash
    python3 homeassistant/velux_ha_ctl.py pair skylight
@@ -111,6 +114,22 @@ python3 homeassistant/velux_ha_ctl.py set_transfer_key <32-HEX-CHARS-FROM-IOHOME
    {"event":"velux_paired","device":"skylight","addr":"aabbcc","action":"paired","position":0,"seq":5,"seq_hex":"0x0005","paired":true,"transfer_key_set":true,"key":"..."}
    ```
 4. Repeat for your blind (`python3 homeassistant/velux_ha_ctl.py pair blind`).
+
+#### Option B: Pair Directly to the Skylight / Blind Motor — No Remote Needed (`pair_tx`)
+Use this if you don't have a `KLI 310 / 311 / 312` wall switch, or if you use a `KLR 200` touchscreen controller and want to add the XIAO MG24 as a new virtual 1-Way remote without disturbing your `KLR 200`:
+
+1. Put the motor into its **10-minute pairing window**:
+   - **No remote / `KLI` available:** Press and hold the physical **RESET / PAIR** button on the skylight or blind motor for **~10 seconds** until the motor performs a brief back-and-forth movement ("jog"). *(Note: holding the physical motor reset button clears existing controller pairings stored inside that motor).*
+   - **With a `KLR 200` touchscreen (keeps `KLR 200` working):** Go to **Settings → New product → Copy / Add control** on the `KLR 200` to put the motor into pairing listen mode.
+2. Run `pair_tx` on the XIAO MG24 within the motor's pairing window:
+   ```bash
+   python3 homeassistant/velux_ha_ctl.py pair_tx skylight
+   # or for a blind:
+   python3 homeassistant/velux_ha_ctl.py pair_tx blind
+   ```
+   The XIAO MG24 generates a random 3-byte address and 16-byte AES-128 key on-chip (using hardware RF entropy), saves them to Flash NVM, and broadcasts the `34-byte` (`0x30`) key-transfer burst across `2425 / 2450 / 2475 MHz`, printing `{"event":"velux_paired",...,"action":"pair_tx"}`.
+   *(Repeating `pair_tx` reuses the saved identity so you can group additional motors or retry safely; append `new` — `pair_tx skylight new` — to force generating a brand-new address and key.)*
+3. *(Tip for freshly factory-reset motors:)* Send a `stop` or `close` command right after `pair_tx` to confirm registration, then run a full `open` and `close` cycle so the motor calibrates its end-stops.
 
 ### 2.3. Test Controlling Your Skylight & Blind
 ```bash
@@ -179,6 +198,7 @@ You can also interact with the XIAO MG24 directly over any serial terminal (`scr
 | `velux set_transfer_key <32-hex>` | Save the 16-byte 1-Way transfer key to Flash NVM (`0x0817FFC0`) |
 | `velux pair blind` | Arm over-the-air pairing for `blind` (press rear PAIR button on remote) |
 | `velux pair skylight` | Arm over-the-air pairing for `skylight` (press rear PAIR button on remote) |
+| `velux pair_tx <blind\|skylight> [new]` | Pair directly to motor in pairing mode as a virtual remote (pass `new` to regenerate ID/key) |
 | `velux stop_pair` | Cancel pairing mode |
 | `velux <blind\|skylight> open` | Open (`0x00` / HA `100%`) |
 | `velux <blind\|skylight> close` | Close (`0xC8` / HA `0%`) |

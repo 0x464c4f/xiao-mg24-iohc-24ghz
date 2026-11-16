@@ -136,6 +136,29 @@ class TestPairingTimeout(CtlTestBase):
         self.assertIn("timed out", lines[-1])
 
 
+class TestDirectPairTx(CtlTestBase):
+    def test_pair_tx_skylight_returns_immediately(self):
+        rc, lines = run_ctl(self.dev.port, "pair_tx", "skylight")
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.dev.commands, ["velux pair_tx skylight"])
+        self.assertEqual(len(lines), 1)
+        event = json.loads(lines[0])
+        self.assertEqual(event["event"], "velux_paired")
+        self.assertEqual(event["device"], "skylight")
+        self.assertEqual(event["action"], "pair_tx")
+
+    def test_pair_tx_blind_new_forwarded(self):
+        rc, lines = run_ctl(self.dev.port, "pair_tx", "blind", "new")
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.dev.commands, ["velux pair_tx blind new"])
+        self.assertEqual(json.loads(lines[0])["action"], "pair_tx")
+
+    def test_pair_tx_missing_device_returns_nonzero(self):
+        rc, lines = run_ctl(self.dev.port, "pair_tx")
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(lines[0])["event"], "velux_error")
+
+
 class TestLocking(unittest.TestCase):
     def test_concurrent_processes_do_not_interleave(self):
         # Home Assistant runs each command as its own process. With a slow

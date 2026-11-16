@@ -180,9 +180,9 @@ static void stream_commit(void)
   g_nib_n = 0;
 }
 
-// 34-byte key-transfer frame as broadcast by the rear PAIR button
-static void make_key_transfer_frame(uint8_t out[34], const uint8_t addr[3],
-                                    const uint8_t master_key[16], uint16_t seq)
+// 34-byte key-transfer frame as broadcast by the rear PAIR button or pair_tx
+static void make_key_transfer_frame_dev(int dev, uint8_t out[34], const uint8_t addr[3],
+                                        const uint8_t master_key[16], uint16_t seq)
 {
   uint8_t iv[16], ks[16];
   for (int i = 0; i < 15; i += 3) {
@@ -190,7 +190,11 @@ static void make_key_transfer_frame(uint8_t out[34], const uint8_t addr[3],
   }
   iv[15] = addr[0];
   aes128_ecb_encrypt(TEST_TK, iv, ks);
-  const uint8_t hdr[8] = { 0x01, 0x69, 0x6f, 0xfc, 0x00, 0x00, 0x01, 0x3f };
+  const uint8_t hdr[8] = {
+    0x01, 0x69, 0x6f, 0xfc, 0x00, 0x00,
+    (uint8_t)((dev == 0) ? 0x00 : 0x01),
+    (uint8_t)((dev == 0) ? 0x7f : 0x3f),
+  };
   memcpy(out, hdr, 8);
   memcpy(&out[8], addr, 3);
   out[11] = 0x30;
@@ -202,6 +206,12 @@ static void make_key_transfer_frame(uint8_t out[34], const uint8_t addr[3],
   out[30] = (uint8_t)(seq >> 8);
   out[31] = (uint8_t)(seq & 0xFF);
   append_crc(out, 34);
+}
+
+static void make_key_transfer_frame(uint8_t out[34], const uint8_t addr[3],
+                                    const uint8_t master_key[16], uint16_t seq)
+{
+  make_key_transfer_frame_dev(1, out, addr, master_key, seq);
 }
 
 // =============================================================================
@@ -519,6 +529,126 @@ static void test_pair_corrupted_frame_ignored(void)
   CHECK_OUT("velux_pairing_stopped");
 }
 
+static void test_pair_tx(void)
+{
+  g_test = "pair_tx";
+
+  // 1. Fails without transfer key
+  fresh_device();
+  g_tx_n = 0;
+  cli(2, "pair_tx", "skylight");
+  CHECK_OUT("transfer key not set");
+  CHECK_EQ(g_tx_n, 0);
+  CHECK_EQ(g_velux_nvm.sky_valid, 0);
+
+  // 2. Existing key/addr + setseq: verifies exact 34B frame and 6 sub-burst schedule
+  fresh_device();
+  cli(2, "set_transfer_key", TEST_TK_HEX);
+  char keyhex[33];
+  for (int i = 0; i < 16; i++) {
+    snprintf(&keyhex[2 * i], 3, "%02x", TEST_KEY[i]);
+  }
+  cli(4, "setkey", "skylight", keyhex, "aabbcc");
+  cli(3, "setseq", "skylight", "0x0500");
+  g_tx_n = 0;
+  out_clear();
+  cli(2, "pair_tx", "skylight");
+
+  uint8_t exp34[34];
+  make_key_transfer_frame_dev(1, exp34, TEST_ADDR, TEST_KEY, 0x0500);
+  CHECK_EQ(g_tx_n, 3 * 36 + 3 * 135);
+  static const uint16_t expected_ch[3] = { 0, 5, 10 };
+  int idx = 0;
+  for (int b = 0; b < 3; b++) {
+    idx = check_subburst(idx, false, expected_ch[b], exp34, 34);
+  }
+  for (int b = 0; b < 3; b++) {
+    idx = check_subburst(idx, true, expected_ch[b], exp34, 34);
+  }
+  CHECK_EQ(g_velux_nvm.sky_seq, 0x0501);
+  CHECK_OUT("\"event\":\"velux_paired\",\"device\":\"skylight\"");
+  CHECK_OUT("\"action\":\"pair_tx\"");
+
+  // 3. Blank device: mints fresh random identities for blind & skylight
+  fresh_device();
+  cli(2, "set_transfer_key", TEST_TK_HEX);
+  g_tx_n = 0;
+  out_clear();
+  cli(2, "blind", "pair_tx");       // device-first argument order
+  CHECK_EQ(g_velux_nvm.blind_valid, 1);
+  CHECK_EQ(g_velux_nvm.blind_seq, 2);
+  CHECK_EQ(g_tx_n, 3 * 36 + 3 * 135);
+  // Blind uses 00 7f broadcast class in TX frame
+  CHECK_EQ(g_tx[8].len, 35);
+  CHECK_EQ(g_tx[8].data[1 + 6], 0x00);
+  CHECK_EQ(g_tx[8].data[1 + 7], 0x7f);
+
+  cli(2, "pair_tx", "skylight");
+  CHECK_EQ(g_velux_nvm.sky_valid, 1);
+  CHECK_EQ(g_velux_nvm.sky_seq, 2);
+
+  static const uint8_t zero16[16] = { 0 };
+  static const uint8_t zero3[3] = { 0 };
+  CHECK(memcmp(g_velux_nvm.blind_key, zero16, 16) != 0);
+  CHECK(memcmp(g_velux_nvm.sky_key, zero16, 16) != 0);
+  CHECK(memcmp(g_velux_nvm.blind_addr, zero3, 3) != 0);
+  CHECK(memcmp(g_velux_nvm.sky_addr, zero3, 3) != 0);
+  CHECK(memcmp(g_velux_nvm.blind_addr, g_velux_nvm.sky_addr, 3) != 0);
+
+  uint8_t saved_addr[3], saved_key[16];
+  memcpy(saved_addr, g_velux_nvm.blind_addr, 3);
+  memcpy(saved_key, g_velux_nvm.blind_key, 16);
+
+  // Persists across reboot
+  reboot();
+  CHECK_MEM(g_velux_nvm.blind_addr, saved_addr, 3);
+  CHECK_MEM(g_velux_nvm.blind_key, saved_key, 16);
+  CHECK_EQ(g_velux_nvm.blind_seq, 2);
+
+  // Repeating pair_tx without "new" keeps existing identity and advances seq
+  cli(2, "pair_tx", "blind");
+  CHECK_MEM(g_velux_nvm.blind_addr, saved_addr, 3);
+  CHECK_MEM(g_velux_nvm.blind_key, saved_key, 16);
+  CHECK_EQ(g_velux_nvm.blind_seq, 3);
+
+  // "pair_tx blind new" mints a distinct identity and resets seq (1 used -> next 2)
+  g_tx_n = 0;
+  cli(3, "pair_tx", "blind", "new");
+  CHECK(memcmp(g_velux_nvm.blind_addr, saved_addr, 3) != 0 ||
+        memcmp(g_velux_nvm.blind_key, saved_key, 16) != 0);
+  CHECK_EQ(g_velux_nvm.blind_seq, 2);
+
+  uint8_t tx_psdu[34];
+  memcpy(tx_psdu, &g_tx[8].data[1], 34);
+  uint8_t minted_addr[3], minted_key[16];
+  memcpy(minted_addr, g_velux_nvm.blind_addr, 3);
+  memcpy(minted_key, g_velux_nvm.blind_key, 16);
+
+  // 4. TX -> RX loopback: second board in "pair" mode decodes minted 0x30 frame
+  fresh_device();
+  cli(2, "set_transfer_key", TEST_TK_HEX);
+  cli(2, "pair", "blind");
+  stream_add_frame(tx_psdu, 34, 11, 40);
+  stream_commit();
+  out_clear();
+  run_loop(400000);
+  CHECK_OUT("\"event\":\"velux_paired\",\"device\":\"blind\"");
+  CHECK_MEM(g_velux_nvm.blind_addr, minted_addr, 3);
+  CHECK_MEM(g_velux_nvm.blind_key, minted_key, 16);
+  CHECK_EQ(g_velux_nvm.blind_seq, 2);
+
+  // 5. Usage errors
+  out_clear();
+  cli(1, "pair_tx");
+  CHECK_OUT("Usage: velux pair_tx");
+  out_clear();
+  cli(2, "pair_tx", "garage");
+  CHECK_OUT("Usage: velux pair_tx");
+  out_clear();
+  cli(3, "pair_tx", "blind", "bogus");
+  CHECK_OUT("Usage: velux pair_tx");
+}
+
 // =============================================================================
 // Tests: wall-switch sync (packet-mode RX path)
 // =============================================================================
@@ -712,6 +842,7 @@ int main(void)
   test_pair_all_phases();
   test_pair_blind_and_persist();
   test_pair_corrupted_frame_ignored();
+  test_pair_tx();
   test_wall_switch_sync();
   test_nvm_wear_leveling();
   test_transfer_key_change();

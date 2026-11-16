@@ -103,10 +103,11 @@ Hex:   01 69 6f f6  [CB2] 00 00 3f  [SRC_3B]  00 01 61 [POS] 00 00 00  [SEQ_N+1]
 
 ## 5. Over-the-Air Key Transfer Frame (`34 Bytes`, `PHR = 0x22`, `Cmd = 0x30`)
 
-When the recessed **PAIR / Config** button on the back of a `KLI 311` or `KLI 312` remote is pressed briefly (~1 second), the remote transmits a `34-byte` (`PHR = 0x22`) LPM burst containing the device's encrypted 16-byte Master Key:
+When the recessed **PAIR / Config** button on the back of a `KLI 311` or `KLI 312` remote is pressed briefly (~1 second)—or when the XIAO MG24 executes direct motor pairing (`velux pair_tx`)—the transmitter broadcasts a `34-byte` (`PHR = 0x22`) burst containing the device's encrypted 16-byte Master Key:
 
 ```text
-Byte:  00 01 02 03  04    05 06 07  08 09 10  11  12..27             28 29  30 31    32 33
-Hex:   01 69 6f fc  [CB2] 00 01 3f  [SRC_3B]  30  [16B_ENC_KEY]      01 01  [SEQ_N]  [CRC16]
+Byte:  00 01 02 03  04    05 06 07    08 09 10  11  12..27             28 29  30 31    32 33
+Hex:   01 69 6f fc  [CB2] 00 [BCAST]  [SRC_3B]  30  [16B_ENC_KEY]      01 01  [SEQ_N]  [CRC16]
 ```
-The 16-byte Master Key is unwrapped on-chip (`iohc_decrypt_1w_key` in [`firmware/app.c`](../firmware/app.c)) by repeating the 3-byte source address `SRC_3B` five times plus `SRC_3B[0]` to form a 16-byte IV, encrypting that IV with AES-128-ECB under the 1-Way system transfer key, and XORing the resulting 16-byte keystream with `16B_ENC_KEY`.
+- `00 [BCAST]`: Actuator type broadcast class (`00 00 7f` for Solar Blind / `KLI 312`; `00 01 3f` for Solar Skylight / `KLI 311`).
+- The 16-byte Master Key is symmetrically wrapped/unwrapped on-chip (`iohc_crypt_1w_key` in [`firmware/app.c`](../firmware/app.c)) by repeating the 3-byte source address `SRC_3B` five times plus `SRC_3B[0]` to form a 16-byte IV, encrypting that IV with AES-128-ECB under the 1-Way system transfer key, and XORing the resulting 16-byte keystream with the key payload (`velux pair` decrypts an incoming frame; `velux pair_tx` encrypts the generated key before transmitting).

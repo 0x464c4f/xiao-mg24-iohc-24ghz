@@ -34,6 +34,7 @@ bool g_pkt_pending;
 static uint8_t g_txfifo[64];
 static uint16_t g_txfifo_len;
 static int g_tx_state_calls;
+static uint32_t g_rng_state = 0x13579BDFU;
 
 void fake_reset(void)
 {
@@ -43,6 +44,7 @@ void fake_reset(void)
   g_feed_len = g_feed_pos = 0;
   g_pkt_pending = false;
   packetsHeld = 0;
+  g_rng_state = 0x13579BDFU;
   railDataConfig.txMethod = PACKET_MODE;
   railDataConfig.rxMethod = PACKET_MODE;
   rxFifoManual = false;
@@ -89,6 +91,19 @@ RAIL_Status_t RAIL_ConfigData(RAIL_Handle_t h, const RAIL_DataConfig_t *c) { (vo
 RAIL_Status_t RAIL_ConfigSyncWords(RAIL_Handle_t h, const RAIL_SyncWordConfig_t *c) { (void)h; (void)c; return 0; }
 RAIL_Status_t RAIL_SetTxPowerDbm(RAIL_Handle_t h, int16_t p) { (void)h; (void)p; return 0; }
 RAIL_Status_t RAIL_SetTxTransitions(RAIL_Handle_t h, const RAIL_StateTransitions_t *t) { (void)h; (void)t; return 0; }
+uint16_t RAIL_GetRadioEntropy(RAIL_Handle_t h, uint8_t *buffer, uint16_t bytes)
+{
+  (void)h;
+  for (uint16_t i = 0; i < bytes; i++) {
+    uint32_t x = g_rng_state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    g_rng_state = x;
+    buffer[i] = (uint8_t)(x >> 24);
+  }
+  return bytes;
+}
 RAIL_Status_t RAIL_StartRx(RAIL_Handle_t h, uint16_t c, const void *s) { (void)h; (void)c; (void)s; return 0; }
 
 // ---- TX recorder

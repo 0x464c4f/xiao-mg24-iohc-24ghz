@@ -62,6 +62,12 @@ class FakeDevice(threading.Thread):
                     "[HOP] +  10.0 ms | [CRC-OK] PHR=22 PSDU: 01 69 6f fc\n"
                     + device_json("velux_paired", dev, "paired") + "\n",)).start()
             return json.dumps({"event": "velux_pairing_armed", "device": dev}, separators=(",", ":")) + "\n"
+        if args[0] == "pair_tx":
+            if len(args) < 2 or args[1] not in ("blind", "skylight") or (len(args) > 2 and args[2] != "new"):
+                return '{"event":"velux_error","error":"Usage: velux pair_tx <blind|skylight> [new]"}\n'
+            dev = args[1]
+            return ("[VELUX-TX] non-LPM x3 PSDU (34B): 01 69 6f fc\n"
+                    + device_json("velux_paired", dev, "pair_tx") + "\n")
         if args[0] == "stop_pair":
             return '{"event":"velux_pairing_stopped"}\n'
         if args[0] == "set_transfer_key":
@@ -70,6 +76,9 @@ class FakeDevice(threading.Thread):
         action = args[1] if len(args) > 1 else "status"
         if action == "status":
             return device_json("velux_status", dev, "status", 42) + "\n"
+        if action == "pair_tx":
+            return ("[VELUX-TX] non-LPM x3 PSDU (34B): 01 69 6f fc\n"
+                    + device_json("velux_paired", dev, "pair_tx") + "\n")
         return ("[VELUX-TX] LPM x3 PSDU (28B): 01 69 6f f6\n"
                 + device_json("velux_state", dev, action) + "\n")
 

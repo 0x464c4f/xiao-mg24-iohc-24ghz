@@ -90,6 +90,7 @@ RAIL_Status_t RAIL_ConfigData(RAIL_Handle_t h, const RAIL_DataConfig_t *cfg);
 RAIL_Status_t RAIL_ConfigSyncWords(RAIL_Handle_t h, const RAIL_SyncWordConfig_t *cfg);
 RAIL_Status_t RAIL_SetTxPowerDbm(RAIL_Handle_t h, int16_t ddbm);
 RAIL_Status_t RAIL_SetTxTransitions(RAIL_Handle_t h, const RAIL_StateTransitions_t *t);
+uint16_t RAIL_GetRadioEntropy(RAIL_Handle_t h, uint8_t *buffer, uint16_t bytes);
 RAIL_Status_t RAIL_StartRx(RAIL_Handle_t h, uint16_t ch, const void *sched);
 RAIL_RxPacketHandle_t RAIL_GetRxPacketInfo(RAIL_Handle_t h, RAIL_RxPacketHandle_t which, RAIL_RxPacketInfo_t *info);
 RAIL_Status_t RAIL_GetRxPacketDetailsAlt(RAIL_Handle_t h, RAIL_RxPacketHandle_t p, RAIL_RxPacketDetails_t *d);

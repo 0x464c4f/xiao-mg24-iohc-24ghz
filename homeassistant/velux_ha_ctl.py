@@ -12,6 +12,8 @@ Usage:
   python3 velux_ha_ctl.py set_transfer_key <32-hex-chars>
   python3 velux_ha_ctl.py pair blind
   python3 velux_ha_ctl.py pair skylight
+  python3 velux_ha_ctl.py pair_tx blind
+  python3 velux_ha_ctl.py pair_tx skylight
   python3 velux_ha_ctl.py blind open
   python3 velux_ha_ctl.py blind close
   python3 velux_ha_ctl.py blind stop
@@ -106,8 +108,9 @@ def main():
     cli_cmd = "velux " + " ".join(args)
     fd = open_serial(port)
     try:
-        if args[0] == "pair":
-            target = args[1] if len(args) > 1 else "skylight"
+        is_rx_pair = (args[0] == "pair") or (len(args) >= 2 and args[1] == "pair")
+        if is_rx_pair:
+            target = args[1] if args[0] == "pair" and len(args) > 1 else (args[0] if args[0] != "pair" else "skylight")
             out = send_velux_cmd(fd, cli_cmd, timeout=1.0)
             for line in out.splitlines():
                 if line.strip().startswith("{"):
@@ -140,11 +143,14 @@ def main():
             return 1
         else:
             out = send_velux_cmd(fd, cli_cmd, timeout=6.0)
+            has_error = False
             for line in out.splitlines():
                 line_s = line.strip()
                 if line_s.startswith("{"):
                     print(line_s)
-            return 0
+                    if '"velux_error"' in line_s:
+                        has_error = True
+            return 1 if has_error else 0
     finally:
         os.close(fd)
 

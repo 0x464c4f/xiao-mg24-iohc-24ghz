@@ -679,7 +679,9 @@ static void iohc_create_1w_hmac(uint8_t hmac[6], uint16_t seq_num, const uint8_t
   memcpy(hmac, out, 6);
 }
 
-static void iohc_decrypt_1w_key(const uint8_t node_addr[3], const uint8_t enc_key[16], uint8_t out_key[16])
+// Symmetric 1-Way key wrap/unwrap: XORs in_key with AES-128-ECB(transfer_key, addr_iv)
+// to encrypt a device key for TX 0x30 frames or decrypt an incoming RX 0x30 frame.
+static void iohc_crypt_1w_key(const uint8_t node_addr[3], const uint8_t in_key[16], uint8_t out_key[16])
 {
   uint8_t iv[16], ks[16];
   for (int i = 0; i < 15; i += 3) {
@@ -690,7 +692,7 @@ static void iohc_decrypt_1w_key(const uint8_t node_addr[3], const uint8_t enc_ke
   iv[15] = node_addr[0];
   aes128_ecb_encrypt(g_velux_transfer_key, iv, ks);
   for (int i = 0; i < 16; i++) {
-    out_key[i] = (uint8_t)(enc_key[i] ^ ks[i]);
+    out_key[i] = (uint8_t)(in_key[i] ^ ks[i]);
   }
 }
 
@@ -957,6 +959,80 @@ static uint16_t finish_frame(uint8_t *out, const uint8_t *appli, uint8_t appli_l
   return i;
 }
 
+static void velux_stop_pair_capture(void);
+
+// Generate a random 3-byte node address and 16-byte AES-128 key for virtual
+// remote direct motor pairing (`pair_tx`), mixing RF entropy and chip state.
+static void velux_generate_identity(int dev, uint8_t addr_out[3], uint8_t key_out[16])
+{
+  uint8_t raw[32] = {0};
+  (void)RAIL_GetRadioEntropy(railHandle, raw, sizeof(raw));
+
+  static uint32_t s_id_nonce = 0;
+  s_id_nonce++;
+  uint32_t mix[4] = {
+    RAIL_GetTime(),
+    g_velux_nvm.generation ^ ((uint32_t)dev << 24) ^ s_id_nonce,
+  #ifndef VELUX_HOST_TEST
+    DEVINFO->EUI64L,
+    DEVINFO->EUI64H
+  #else
+    0x564C5832UL ^ s_id_nonce,
+    0x104C2400UL ^ (uint32_t)dev
+  #endif
+  };
+  uint8_t blk[16], addr_blk[16];
+  memcpy(blk, mix, 16);
+  for (int i = 0; i < 16; i++) {
+    blk[i] ^= raw[16 + i];
+  }
+  aes128_ecb_encrypt(raw, blk, key_out);
+  blk[0] ^= 0xA5U;
+  aes128_ecb_encrypt(key_out, blk, addr_blk);
+  memcpy(addr_out, addr_blk, 3);
+
+  bool nz = false;
+  for (int i = 0; i < 16; i++) {
+    if (key_out[i] != 0) {
+      nz = true;
+    }
+  }
+  if (!nz) {
+    key_out[0] = 0x01;
+  }
+
+  if ((addr_out[0] == 0 && addr_out[1] == 0 && addr_out[2] == 0)
+      || (addr_out[0] == 0xFF && addr_out[1] == 0xFF && addr_out[2] == 0xFF)) {
+    addr_out[2] ^= 0x01;
+  }
+
+  const uint8_t *other_addr = (dev == 0) ? g_velux_nvm.sky_addr : g_velux_nvm.blind_addr;
+  bool other_valid = (dev == 0) ? (g_velux_nvm.sky_valid != 0) : (g_velux_nvm.blind_valid != 0);
+  if (other_valid && memcmp(addr_out, other_addr, 3) == 0) {
+    addr_out[2] ^= 0x02;
+    if (addr_out[0] == 0 && addr_out[1] == 0 && addr_out[2] == 0) {
+      addr_out[2] = 0x01;
+    }
+  }
+}
+
+// 34-byte 1-Way key-transfer (ADD, cmd 0x30) frame for direct motor pairing
+static void velux_build_34b_pair_frame(int dev, const uint8_t addr[3], const uint8_t key[16],
+                                       uint16_t seq, uint8_t out[34])
+{
+  // Broadcast class: blind 00 7f, skylight (window opener) 01 3f
+  build_header(out, 0xfc, (dev == 0) ? 0x00 : 0x01, (dev == 0) ? 0x7f : 0x3f, addr);
+  out[11] = 0x30;
+  iohc_crypt_1w_key(addr, key, &out[12]);
+  out[28] = 0x01;   // Manufacturer ID: 0x01 (VELUX)
+  out[29] = 0x01;
+  out[30] = (uint8_t)(seq >> 8);
+  out[31] = (uint8_t)(seq & 0xFF);
+  uint16_t crc = kermit_crc16(out, 32);
+  out[32] = (uint8_t)(crc & 0xFF);
+  out[33] = (uint8_t)(crc >> 8);
+}
+
 // Stage 1: 30-byte non-LPM pre-command (byte 17 is always 0xC8)
 static void velux_build_30b_frame(int dev, const uint8_t addr[3], const uint8_t key[16],
                                   uint16_t seq, uint8_t out[30])
@@ -984,8 +1060,8 @@ static void velux_exec_command(int dev, uint8_t main0, const char *action_name)
   bool valid = (dev == 0) ? (g_velux_nvm.blind_valid != 0) : (g_velux_nvm.sky_valid != 0);
   if (!valid) {
     printf("{\"event\":\"velux_error\",\"device\":\"%s\",\"error\":\"Device not paired yet. "
-           "Run 'velux pair %s' and press the rear PAIR button on the remote.\"}\n",
-           dev_name(dev), dev_name(dev));
+           "Run 'velux pair %s' (clone remote) or 'velux pair_tx %s' (pair directly to motor).\"}\n",
+           dev_name(dev), dev_name(dev), dev_name(dev));
     return;
   }
 
@@ -1010,6 +1086,53 @@ static void velux_exec_command(int dev, uint8_t main0, const char *action_name)
   velux_transmit(f28, sizeof(f28), true, VELUX_DEFAULT_BURSTS);
 
   velux_print_device_json("velux_state", dev, action_name);
+}
+
+// Transmit a 34-byte 1-Way key-transfer (0x30) burst directly to a motor in pairing mode
+static void velux_exec_pair_tx(int dev, bool force_new)
+{
+  if (!g_velux_transfer_key_valid) {
+    velux_print_error("1-Way transfer key not set. Run 'velux set_transfer_key <32-hex>' first.");
+    return;
+  }
+  if (g_velux_pair_mode) {
+    velux_stop_pair_capture();
+  }
+
+  uint8_t  *addr_p  = (dev == 0) ? g_velux_nvm.blind_addr  : g_velux_nvm.sky_addr;
+  uint8_t  *key_p   = (dev == 0) ? g_velux_nvm.blind_key   : g_velux_nvm.sky_key;
+  uint16_t *seq_p   = (dev == 0) ? &g_velux_nvm.blind_seq  : &g_velux_nvm.sky_seq;
+  uint8_t  *pos_p   = (dev == 0) ? &g_velux_nvm.blind_pos  : &g_velux_nvm.sky_pos;
+  uint16_t *valid_p = (dev == 0) ? &g_velux_nvm.blind_valid : &g_velux_nvm.sky_valid;
+
+  if (force_new || (*valid_p == 0)) {
+    velux_generate_identity(dev, addr_p, key_p);
+    *seq_p = 1;
+    *pos_p = 0;
+    *valid_p = 1;
+  }
+
+  uint16_t seq_n = *seq_p;
+  *seq_p = (uint16_t)(seq_n + 1U);
+  velux_nvm_save();
+
+  uint8_t f34[34];
+  velux_build_34b_pair_frame(dev, addr_p, key_p, seq_n, f34);
+
+  velux_transmit(f34, sizeof(f34), false, VELUX_DEFAULT_BURSTS);
+  velux_transmit(f34, sizeof(f34), true, VELUX_DEFAULT_BURSTS);
+
+  velux_print_device_json("velux_paired", dev, "pair_tx");
+}
+
+static void velux_handle_pair_tx_arg(int dev, const char *opt)
+{
+  bool force_new = (opt != NULL && strcmp(opt, "new") == 0);
+  if (opt != NULL && !force_new) {
+    velux_print_error("Usage: velux pair_tx <blind|skylight> [new]");
+    return;
+  }
+  velux_exec_pair_tx(dev, force_new);
 }
 
 static void velux_start_pair_capture(int dev)
@@ -1068,7 +1191,7 @@ static void velux_on_rx_valid_frame(const uint8_t *psdu, uint16_t len)
       return;
     }
     uint8_t master_key[16];
-    iohc_decrypt_1w_key(src, &psdu[12], master_key);
+    iohc_crypt_1w_key(src, &psdu[12], master_key);
     uint16_t rx_seq = (uint16_t)(((uint16_t)psdu[30] << 8) | psdu[31]);
 
     int dev = g_velux_pair_target;
@@ -1157,7 +1280,8 @@ static void cli_print_status_all(void)
  * velux [status]
  * velux set_transfer_key <32-hex>
  * velux pair <blind|skylight>      velux stop_pair
- * velux <blind|skylight> <open|close|stop|vent|pos N|status|pair>
+ * velux pair_tx <blind|skylight> [new]
+ * velux <blind|skylight> <open|close|stop|vent|pos N|status|pair|pair_tx>
  * velux setkey <blind|skylight> <32-hex-key> [6-hex-addr]
  * velux setseq <blind|skylight> <seq>
  * velux reset_nvm
@@ -1218,6 +1342,15 @@ void cli_velux(sl_cli_command_arg_t *args)
     return;
   }
 
+  if (strcmp(a0, "pair_tx") == 0) {
+    if (!parse_device(a1, &dev)) {
+      velux_print_error("Usage: velux pair_tx <blind|skylight> [new]");
+      return;
+    }
+    velux_handle_pair_tx_arg(dev, a2);
+    return;
+  }
+
   if (strcmp(a0, "stop_pair") == 0) {
     velux_stop_pair_capture();
     printf("{\"event\":\"velux_pairing_stopped\"}\n");
@@ -1274,7 +1407,7 @@ void cli_velux(sl_cli_command_arg_t *args)
     cmd = a0;
     val = a2;
   } else {
-    velux_print_error("Missing device. Use: velux <blind|skylight> <open|close|stop|vent|pos N|status|pair>");
+    velux_print_error("Missing device. Use: velux <blind|skylight> <open|close|stop|vent|pos N|status|pair|pair_tx>");
     return;
   }
 
@@ -1296,8 +1429,10 @@ void cli_velux(sl_cli_command_arg_t *args)
     velux_exec_command(dev, (uint8_t)(200U - ha_pct * 2U), "pos");
   } else if (strcmp(cmd, "pair") == 0) {
     velux_start_pair_capture(dev);
+  } else if (strcmp(cmd, "pair_tx") == 0) {
+    velux_handle_pair_tx_arg(dev, val);
   } else {
-    velux_print_error("Unknown command. Use open|close|stop|vent|pos|status|pair|setseq|setkey|set_transfer_key|reset_nvm|stop_pair");
+    velux_print_error("Unknown command. Use open|close|stop|vent|pos|status|pair|pair_tx|setseq|setkey|set_transfer_key|reset_nvm|stop_pair");
   }
 }
 
