@@ -239,18 +239,21 @@ static void dump_burst_over_serial(void)
   printf("--- BURST CAPTURE DUMP END ---\n\n");
 }
 
-// FIFO stream decoder (raw demodulator stream, 32 us per byte). Used while
-// pairing and to follow wall-switch presses for rolling-counter sync.
-static void dump_fifo_stream_over_serial(void)
+// FIFO stream decoder (raw demodulator stream, 32 us per byte). Used quietly
+// in the background to follow wall-switch presses for rolling-counter sync,
+// and verbosely while armed in pairing mode.
+static void dump_fifo_stream_over_serial(bool verbose)
 {
   if (g_burst_write_idx == 0) {
     return;
   }
 
-  printf("\n--- FIFO STREAM CAPTURE DUMP START (bytes=%lu, duration_ms=%lu, ovf=%d) ---\n",
-         (unsigned long)g_burst_write_idx,
-         (unsigned long)((g_burst_write_idx * 32UL) / 1000UL),
-         g_burst_overflow ? 1 : 0);
+  if (verbose) {
+    printf("\n--- FIFO STREAM CAPTURE DUMP START (bytes=%lu, duration_ms=%lu, ovf=%d) ---\n",
+           (unsigned long)g_burst_write_idx,
+           (unsigned long)((g_burst_write_idx * 32UL) / 1000UL),
+           g_burst_overflow ? 1 : 0);
+  }
 
   const uint8_t *buf = g_burst_buffer;
   uint32_t total_nibs = g_burst_write_idx * 2U;
@@ -258,7 +261,7 @@ static void dump_fifo_stream_over_serial(void)
   uint32_t total_cmd = 0;
   bool printed_first_beacon = false;
 
-  // Pass 1: preamble-locked frames (beacons + commands)
+  // Pass 1: preamble-locked frames (commands, plus beacons when verbose)
   uint32_t nib = 4;
   while (nib + 1 < total_nibs) {
     uint8_t P = get_nibble(buf, nib - 1);
@@ -266,31 +269,35 @@ static void dump_fifo_stream_over_serial(void)
       uint8_t phr;
       decode_bytes(buf, nib + 2, P, &phr, 1);
       uint32_t remaining = (total_nibs - (nib + 4)) / 2;
-      if (phr >= 3 && phr <= 36 && remaining >= phr) {
+      if (phr >= 3 && phr <= 36 && remaining >= phr && (verbose || is_command_len(phr))) {
         uint8_t psdu[36];
         decode_bytes(buf, nib + 4, P, psdu, phr);
         if (kermit_crc16(psdu, phr) == 0) {
           bool is_cmd = is_command_len(phr);
-          bool print_it = is_cmd;
-          if (!is_cmd && phr == 0x05 && psdu[0] == 0x00 && psdu[1] == 0x00 && psdu[2] <= 0x6A) {
-            // Only print first / last few wake-up beacons to keep output short
-            if (!printed_first_beacon || psdu[2] >= 0x68 || psdu[2] <= 0x08) {
-              print_it = true;
-              printed_first_beacon = true;
+          if (verbose) {
+            bool print_it = is_cmd;
+            if (!is_cmd && phr == 0x05 && psdu[0] == 0x00 && psdu[1] == 0x00 && psdu[2] <= 0x6A) {
+              // Only print first / last few wake-up beacons to keep output short
+              if (!printed_first_beacon || psdu[2] >= 0x68 || psdu[2] <= 0x08) {
+                print_it = true;
+                printed_first_beacon = true;
+              }
             }
-          }
-          if (print_it) {
-            uint32_t off = nib / 2;
-            total_crc_ok++;
-            printf("[HOP] +%4lu.%01lu ms (off=%5lu align=%lu P=%2u) | [CRC-OK] PHR=%02x PSDU: ",
-                   (unsigned long)((off * 32UL) / 1000UL),
-                   (unsigned long)(((off * 32UL) % 1000UL) / 100UL),
-                   (unsigned long)off, (unsigned long)(nib % 2), P, phr);
-            print_hex_line(psdu, phr);
+            if (print_it) {
+              uint32_t off = nib / 2;
+              total_crc_ok++;
+              printf("[HOP] +%4lu.%01lu ms (off=%5lu align=%lu P=%2u) | [CRC-OK] PHR=%02x PSDU: ",
+                     (unsigned long)((off * 32UL) / 1000UL),
+                     (unsigned long)(((off * 32UL) % 1000UL) / 100UL),
+                     (unsigned long)off, (unsigned long)(nib % 2), P, phr);
+              print_hex_line(psdu, phr);
+            }
           }
           if (is_cmd) {
             total_cmd++;
-            printf("  *** NEW COMMAND FRAME DETECTED! ***\n");
+            if (verbose) {
+              printf("  *** NEW COMMAND FRAME DETECTED! ***\n");
+            }
             velux_on_rx_valid_frame(psdu, phr);
           }
           nib += 2U + 2U * (1U + phr);
@@ -302,51 +309,53 @@ static void dump_fifo_stream_over_serial(void)
   }
 
   // Pass 2: exhaustive search for command frames without a clean preamble
-  // (all 16 phases, PSDU must start with 0x01)
-  uint32_t end_nib = (total_nibs > (2 + 2 * 35)) ? (total_nibs - (2 + 2 * 35)) : 0;
+  // (all 16 phases, PSDU must start with 0x01). For any first nibble n0,
+  // exactly one phase P satisfies inv_nibble(n0, P) == 6.
+  uint32_t end_nib = (total_nibs > 24U) ? (total_nibs - 24U) : 0U;
   nib = 4;
   while (nib < end_nib) {
-    bool found = false;
-    for (uint8_t P = 0; P < 16 && !found; P++) {
-      if (!sfd_at(buf, nib, P)) {
-        continue;
-      }
+    uint8_t n0 = get_nibble(buf, nib);
+    uint8_t P = (uint8_t)((n0 & 8U) | ((n0 + 2U) & 7U));
+    if (inv_nibble(get_nibble(buf, nib + 1U), P) == 5U) {
       uint8_t hdr2[2];
-      decode_bytes(buf, nib + 2, P, hdr2, 2);   // PHR + first PSDU byte
+      decode_bytes(buf, nib + 2U, P, hdr2, 2);   // PHR + first PSDU byte
       uint8_t phr = hdr2[0];
-      if (!is_command_len(phr) || hdr2[1] != 0x01) {
-        continue;
+      if (is_command_len(phr) && hdr2[1] == 0x01
+          && (nib + 4U + 2U * (uint32_t)phr <= total_nibs)) {
+        uint8_t psdu[36];
+        decode_bytes(buf, nib + 4U, P, psdu, phr);
+        if (kermit_crc16(psdu, phr) == 0) {
+          if (verbose) {
+            uint32_t off = nib / 2U;
+            printf("[EXHAUSTIVE] +%4lu.%01lu ms (off=%5lu align=%lu P=%2u) | [CRC-OK] PSDU: ",
+                   (unsigned long)((off * 32UL) / 1000UL),
+                   (unsigned long)(((off * 32UL) % 1000UL) / 100UL),
+                   (unsigned long)off, (unsigned long)(nib % 2U), P);
+            print_hex_line(psdu, phr);
+          }
+          velux_on_rx_valid_frame(psdu, phr);
+          total_cmd++;
+          total_crc_ok++;
+          nib += 2U + 2U * (1U + phr);
+          continue;
+        }
       }
-      uint8_t psdu[36];
-      decode_bytes(buf, nib + 4, P, psdu, phr);
-      if (kermit_crc16(psdu, phr) != 0) {
-        continue;
-      }
-      uint32_t off = nib / 2;
-      printf("[EXHAUSTIVE] +%4lu.%01lu ms (off=%5lu align=%lu P=%2u) | [CRC-OK] PSDU: ",
-             (unsigned long)((off * 32UL) / 1000UL),
-             (unsigned long)(((off * 32UL) % 1000UL) / 100UL),
-             (unsigned long)off, (unsigned long)(nib % 2), P);
-      print_hex_line(psdu, phr);
-      velux_on_rx_valid_frame(psdu, phr);
-      total_cmd++;
-      total_crc_ok++;
-      nib += 2U + 2U * (1U + phr);
-      found = true;
     }
-    if (!found) {
-      nib++;
-    }
+    nib++;
   }
 
-  printf("--- SUMMARY: CRC-OK=%lu, NEW-COMMAND=%lu ---\n",
-         (unsigned long)total_crc_ok, (unsigned long)total_cmd);
-  printf("--- BURST CAPTURE DUMP END ---\n\n");
+  if (verbose) {
+    printf("--- SUMMARY: CRC-OK=%lu, NEW-COMMAND=%lu ---\n",
+           (unsigned long)total_crc_ok, (unsigned long)total_cmd);
+    printf("--- BURST CAPTURE DUMP END ---\n\n");
+  }
 }
 
 // Re-arm FIFO stream RX with dual sync words (0x6A raw / 0x56 on-air)
 static void fifo_rx_rearm(void)
 {
+  RAIL_Idle(railHandle, RAIL_IDLE_ABORT, true);
+  RAIL_ResetFifo(railHandle, false, true);
   RAIL_StartRx(railHandle, channel, NULL);
   REG_MODEM_CTRL1  = 0x0052C207;   // DUALSYNC enabled
   REG_MODEM_SYNC0  = 0x6A;
@@ -391,6 +400,30 @@ static inline void restore_rx_fcd(void)
   REG_FRC_FCD1 = 0x00004CFF;
   REG_FRC_FCD2 = 0x00004100;
   REG_FRC_FCD3 = 0x00004DFF;
+}
+
+// Configure and start continuous 16-phase FIFO stream RX on 2425 MHz (ch 0).
+// Used quietly in the background to follow physical wall switches and verbosely
+// while armed for over-the-air pairing.
+static void velux_start_fifo_rx(void)
+{
+  RAIL_Idle(railHandle, RAIL_IDLE_ABORT, true);
+  railDataConfig.txMethod = PACKET_MODE;
+  railDataConfig.rxMethod = FIFO_MODE;
+  RAIL_ConfigData(railHandle, &railDataConfig);
+  rxFifoManual = true;
+  channel = 0;
+
+  restore_rx_fcd();
+  RAIL_SyncWordConfig_t rx_sync = { .syncWordBits = 8U, .syncWord1 = 0x6AUL, .syncWord2 = 0x56UL };
+  RAIL_ConfigSyncWords(railHandle, &rx_sync);
+  RAIL_SetFixedLength(railHandle, 4095);   // infinite-length raw stream
+  RAIL_ResetFifo(railHandle, true, true);
+  g_burst_write_idx = 0;
+  g_burst_packet_count = 0;
+  g_burst_in_progress = false;
+  g_burst_overflow = false;
+  fifo_rx_rearm();
 }
 
 // Transmit one frame (PHR + PSDU) starting exactly at t_target_us
@@ -541,14 +574,9 @@ static void velux_transmit(const uint8_t *psdu, uint16_t psdu_len, bool lpm, uin
   }
   uint32_t total_ms = (RAIL_GetTime() - t_start) / 1000UL;
 
-  // Restore RX configuration
-  RAIL_Idle(railHandle, RAIL_IDLE_ABORT, true);
-  restore_rx_fcd();
-  REG_MODEM_SYNC0 = 0x6A;
-  REG_MODEM_SYNC1 = 0x56;
-  RAIL_SetFixedLength(railHandle, 0);
-  RAIL_SyncWordConfig_t rx_sync = { .syncWordBits = 8U, .syncWord1 = 0x6AUL, .syncWord2 = 0x56UL };
-  RAIL_ConfigSyncWords(railHandle, &rx_sync);
+  // Restore continuous 16-phase background RX so manual wall-switch presses
+  // keep the rolling sequence counter synchronized after every command.
+  velux_start_fifo_rx();
 
   g_tx_done_count++;
   printf("[VELUX-TX] done (count=%lu, total_ms=%lu, ok=%lu, err=%lu, bcn_us=%lu, cmd_us=%lu)\n",
@@ -1144,21 +1172,7 @@ static void velux_start_pair_capture(int dev)
 
   g_velux_pair_mode = true;
   g_velux_pair_target = dev;
-
-  RAIL_Idle(railHandle, RAIL_IDLE_ABORT, true);
-  railDataConfig.txMethod = PACKET_MODE;
-  railDataConfig.rxMethod = FIFO_MODE;
-  RAIL_ConfigData(railHandle, &railDataConfig);
-  rxFifoManual = true;
-  channel = 0;
-
-  restore_rx_fcd();
-  RAIL_SetFixedLength(railHandle, 4095);   // infinite-length raw stream
-  RAIL_ResetFifo(railHandle, true, true);
-  g_burst_write_idx = 0;
-  g_burst_in_progress = false;
-  g_burst_overflow = false;
-  fifo_rx_rearm();
+  velux_start_fifo_rx();
 
   printf("{\"event\":\"velux_pairing_armed\",\"device\":\"%s\","
          "\"info\":\"Press the rear PAIR/RESET button on the remote now...\"}\n", dev_name(dev));
@@ -1167,13 +1181,7 @@ static void velux_start_pair_capture(int dev)
 static void velux_stop_pair_capture(void)
 {
   g_velux_pair_mode = false;
-  RAIL_Idle(railHandle, RAIL_IDLE_ABORT, true);
-  railDataConfig.txMethod = PACKET_MODE;
-  railDataConfig.rxMethod = PACKET_MODE;
-  RAIL_ConfigData(railHandle, &railDataConfig);
-  rxFifoManual = false;
-  RAIL_SetFixedLength(railHandle, 0);
-  RAIL_ResetFifo(railHandle, true, true);
+  velux_start_fifo_rx();
 }
 
 // Handle a decoded, CRC-valid frame
@@ -1193,28 +1201,51 @@ static void velux_on_rx_valid_frame(const uint8_t *psdu, uint16_t len)
     uint8_t master_key[16];
     iohc_crypt_1w_key(src, &psdu[12], master_key);
     uint16_t rx_seq = (uint16_t)(((uint16_t)psdu[30] << 8) | psdu[31]);
-
-    int dev = g_velux_pair_target;
-    if (!g_velux_pair_mode) {
-      dev = (memcmp(src, g_velux_nvm.blind_addr, 3) == 0) ? 0 : 1;
-    }
-    if (dev == 0) {
-      memcpy(g_velux_nvm.blind_addr, src, 3);
-      memcpy(g_velux_nvm.blind_key, master_key, 16);
-      g_velux_nvm.blind_seq = (uint16_t)(rx_seq + 1U);
-      g_velux_nvm.blind_valid = 1;
-    } else {
-      memcpy(g_velux_nvm.sky_addr, src, 3);
-      memcpy(g_velux_nvm.sky_key, master_key, 16);
-      g_velux_nvm.sky_seq = (uint16_t)(rx_seq + 1U);
-      g_velux_nvm.sky_valid = 1;
-    }
-    velux_nvm_save();
+    uint16_t next_seq = (uint16_t)(rx_seq + 1U);
 
     if (g_velux_pair_mode) {
+      int dev = g_velux_pair_target;
+      if (dev == 0) {
+        memcpy(g_velux_nvm.blind_addr, src, 3);
+        memcpy(g_velux_nvm.blind_key, master_key, 16);
+        g_velux_nvm.blind_seq = next_seq;
+        g_velux_nvm.blind_valid = 1;
+      } else {
+        memcpy(g_velux_nvm.sky_addr, src, 3);
+        memcpy(g_velux_nvm.sky_key, master_key, 16);
+        g_velux_nvm.sky_seq = next_seq;
+        g_velux_nvm.sky_valid = 1;
+      }
+      velux_nvm_save();
       velux_stop_pair_capture();
+      velux_print_device_json("velux_paired", dev, "paired");
+      return;
     }
-    velux_print_device_json("velux_paired", dev, "paired");
+
+    // Not actively pairing: only refresh keys/counters for an already-paired
+    // address when the key changed or the rolling counter advanced.
+    int dev = -1;
+    if (g_velux_nvm.blind_valid && memcmp(src, g_velux_nvm.blind_addr, 3) == 0) {
+      bool key_changed = (memcmp(g_velux_nvm.blind_key, master_key, 16) != 0);
+      int16_t delta = (int16_t)(next_seq - g_velux_nvm.blind_seq);
+      if (key_changed || delta > 0) {
+        memcpy(g_velux_nvm.blind_key, master_key, 16);
+        g_velux_nvm.blind_seq = next_seq;
+        dev = 0;
+      }
+    } else if (g_velux_nvm.sky_valid && memcmp(src, g_velux_nvm.sky_addr, 3) == 0) {
+      bool key_changed = (memcmp(g_velux_nvm.sky_key, master_key, 16) != 0);
+      int16_t delta = (int16_t)(next_seq - g_velux_nvm.sky_seq);
+      if (key_changed || delta > 0) {
+        memcpy(g_velux_nvm.sky_key, master_key, 16);
+        g_velux_nvm.sky_seq = next_seq;
+        dev = 1;
+      }
+    }
+    if (dev >= 0) {
+      velux_nvm_save();
+      velux_print_device_json("velux_paired", dev, "paired");
+    }
     return;
   }
 
@@ -1229,28 +1260,51 @@ static void velux_on_rx_valid_frame(const uint8_t *psdu, uint16_t len)
     return;
   }
 
-  uint16_t rx_seq = (len == 28)
-                    ? (uint16_t)(((uint16_t)psdu[18] << 8) | psdu[19])
-                    : (uint16_t)(((uint16_t)psdu[20] << 8) | psdu[21]);
+  uint8_t appli_len = (uint8_t)(len - 21U);
+  uint16_t rx_seq = (uint16_t)(((uint16_t)psdu[len - 10U] << 8) | psdu[len - 9U]);
+  uint16_t next_seq = (uint16_t)(rx_seq + 1U);
+  const uint8_t *dev_key = (dev == 0) ? g_velux_nvm.blind_key : g_velux_nvm.sky_key;
+  uint16_t *seq_p = (dev == 0) ? &g_velux_nvm.blind_seq : &g_velux_nvm.sky_seq;
+  uint8_t *pos_p  = (dev == 0) ? &g_velux_nvm.blind_pos : &g_velux_nvm.sky_pos;
+
+  // Authenticate the 6-byte 1-Way MAC so random CRC collisions cannot corrupt seq
+  uint8_t expected_mac[6];
+  iohc_create_1w_hmac(expected_mac, rx_seq, dev_key, &psdu[11], appli_len);
+  if (memcmp(expected_mac, &psdu[len - 8U], 6) != 0) {
+    return;
+  }
+
   const char *act = "sync";
+  bool have_pos = false;
+  uint8_t ha_pos = 0;
   if (len == 28 && psdu[13] == 0x61) {
     uint8_t main0 = psdu[14];
     act = (main0 == 0x00) ? "open" : (main0 == 0xC8) ? "close" : (main0 == 0xD2) ? "stop" : "pos";
     if (main0 <= 0xC8) {
-      if (dev == 0) {
-        g_velux_nvm.blind_pos = main0_to_ha_pct(main0);
-      } else {
-        g_velux_nvm.sky_pos = main0_to_ha_pct(main0);
-      }
+      have_pos = true;
+      ha_pos = main0_to_ha_pct(main0);
     }
   }
-  if (dev == 0) {
-    g_velux_nvm.blind_seq = (uint16_t)(rx_seq + 1U);
-  } else {
-    g_velux_nvm.sky_seq = (uint16_t)(rx_seq + 1U);
+
+  // Monotonic modular 16-bit counter guard: never regress seq backwards
+  // (e.g. from Pass 2 rescanning Stage 1 after Stage 2, or from a stale remote)
+  // and skip duplicate W0..W3 windows to avoid redundant Flash writes.
+  int16_t delta = (int16_t)(next_seq - *seq_p);
+  bool changed = false;
+  if (delta > 0) {
+    *seq_p = next_seq;
+    changed = true;
+    if (have_pos) {
+      *pos_p = ha_pos;
+    }
+  } else if (delta == 0 && have_pos && *pos_p != ha_pos) {
+    *pos_p = ha_pos;
+    changed = true;
   }
-  velux_nvm_save();
-  velux_print_device_json("velux_remote", dev, act);
+  if (changed) {
+    velux_nvm_save();
+    velux_print_device_json("velux_remote", dev, act);
+  }
 }
 
 static int parse_hex_bytes(const char *hex_str, uint8_t *out, int max_bytes)
@@ -1455,6 +1509,7 @@ void app_init(void)
   logLevel &= ~ASYNC_RESPONSE;
 
   velux_nvm_init();
+  velux_start_fifo_rx();
 
   velux_print_device_json("velux_boot", 0, "boot");
   velux_print_device_json("velux_boot", 1, "boot");
@@ -1508,7 +1563,7 @@ void app_process_action(void)
     g_burst_in_progress = true;
   }
 
-  // 2. FIFO stream mode (pairing): read raw demodulator bytes
+  // 2. FIFO stream mode (background wall-switch sync & pairing): read raw demodulator bytes
   if (railDataConfig.rxMethod == FIFO_MODE && rxFifoManual) {
     static bool s_resynced_stage2 = false;
     if (!g_burst_in_progress) {
@@ -1550,7 +1605,7 @@ void app_process_action(void)
       RAIL_Idle(railHandle, RAIL_IDLE_ABORT, true);
       RAIL_ResetFifo(railHandle, false, true);
 
-      dump_fifo_stream_over_serial();
+      dump_fifo_stream_over_serial(g_velux_pair_mode);
 
       g_burst_write_idx = 0;
       g_burst_in_progress = false;

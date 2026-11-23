@@ -378,7 +378,10 @@ static void test_tx_close_blind(void)
   CHECK_EQ(g_velux_nvm.blind_pos, 0);        // closed
   CHECK_OUT("\"event\":\"velux_state\",\"device\":\"blind\"");
   CHECK_OUT("\"action\":\"close\"");
-  // RX configuration restored afterwards
+  // Background 16-phase FIFO RX is immediately re-armed afterwards
+  CHECK(g_rx_active);
+  CHECK_EQ(railDataConfig.rxMethod, FIFO_MODE);
+  CHECK(rxFifoManual);
   CHECK_EQ(fake_reg_fcd[0], 0x00004000);
   CHECK_EQ(fake_reg_sync0, 0x6A);
   CHECK_EQ(fake_reg_sync1, 0x56);
@@ -446,10 +449,13 @@ static void test_pair_requires_transfer_key(void)
 {
   g_test = "pair_needs_tk";
   fresh_device();
+  CHECK(g_rx_active);
+  CHECK_EQ(railDataConfig.rxMethod, FIFO_MODE);
   cli(2, "pair", "skylight");
   CHECK_OUT("transfer key not set");
   CHECK(!g_velux_pair_mode);
-  CHECK_EQ(railDataConfig.rxMethod, PACKET_MODE);
+  CHECK(g_rx_active);
+  CHECK_EQ(railDataConfig.rxMethod, FIFO_MODE);
 }
 
 static void test_pair_all_phases(void)
@@ -480,7 +486,8 @@ static void test_pair_all_phases(void)
       CHECK_EQ(g_velux_nvm.sky_valid, 1);
       CHECK_EQ(g_velux_nvm.blind_valid, 0);
       CHECK(!g_velux_pair_mode);
-      CHECK_EQ(railDataConfig.rxMethod, PACKET_MODE);
+      CHECK(g_rx_active);
+      CHECK_EQ(railDataConfig.rxMethod, FIFO_MODE);
     }
   }
 }
@@ -650,7 +657,7 @@ static void test_pair_tx(void)
 }
 
 // =============================================================================
-// Tests: wall-switch sync (packet-mode RX path)
+// Tests: wall-switch sync (quiet background 16-phase FIFO RX + packet-mode path)
 // =============================================================================
 static void queue_packet_direct(const uint8_t *psdu, uint8_t len)
 {
@@ -665,42 +672,130 @@ static void test_wall_switch_sync(void)
 {
   g_test = "wall_switch_sync";
   fresh_device();
+  cli(2, "set_transfer_key", TEST_TK_HEX);
   pair_blind_via_setkey();
 
-  // Wall switch sends "open" with a counter well ahead of ours
-  uint8_t f[28];
-  velux_build_28b_frame(TEST_ADDR, TEST_KEY, 0x2000, 0x00, f);
-  queue_packet_direct(f, 28);
+  // Transmit first: background 16-phase FIFO RX must automatically re-arm
+  g_tx_n = 0;
+  cli(2, "blind", "close");
+  CHECK(g_rx_active);
+  CHECK_EQ(railDataConfig.rxMethod, FIFO_MODE);
+  CHECK(rxFifoManual);
+  CHECK(!g_velux_pair_mode);
+  CHECK_EQ(g_velux_nvm.blind_seq, 0x1236);
+
+  // Physical wall switch sends Stage 1 (30B @ 0x2000, W0+W1) + Stage 2 (28B @ 0x2001, W0+W1)
+  // captured at arbitrary correlator phase P=13, odd nibble alignment
+  uint8_t f30[30], f28[28];
+  velux_build_30b_frame(0, TEST_ADDR, TEST_KEY, 0x2000, f30);
+  velux_build_28b_frame(TEST_ADDR, TEST_KEY, 0x2001, 0x00, f28);
+  stream_add_frame(f30, 30, 13, 41);
+  stream_add_frame(f30, 30, 13, 18);   // duplicate Stage-1 window
+  stream_add_frame(f28, 28, 13, 24);
+  stream_add_frame(f28, 28, 13, 18);   // duplicate Stage-2 window
+  stream_commit();
+  uint32_t gen_before = g_velux_nvm.generation;
+  out_clear();
+  run_loop(400000);
+
+  // Quiet background output: zero diagnostic dump spam, only velux_remote JSON
+  CHECK_NOT_OUT("FIFO STREAM CAPTURE DUMP");
+  CHECK_NOT_OUT("[HOP]");
+  CHECK_NOT_OUT("[EXHAUSTIVE]");
+  CHECK_OUT("\"event\":\"velux_remote\",\"device\":\"blind\"");
+  CHECK_OUT("\"action\":\"open\"");
+  // Must end at 0x2002 (not regressed to 0x2001 by Pass 2 rescanning Stage 1)
+  CHECK_EQ(g_velux_nvm.blind_seq, 0x2002);
+  CHECK_EQ(g_velux_nvm.blind_pos, 100);
+  // Deduplication: only 2 NVM writes (Stage 1 + Stage 2), not 4 or 8
+  CHECK_EQ(g_velux_nvm.generation, gen_before + 2U);
+  // Still actively listening in quiet FIFO mode
+  CHECK(g_rx_active);
+  CHECK_EQ(railDataConfig.rxMethod, FIFO_MODE);
+
+  // Our next command must continue from the synced counter and re-arm RX
+  g_tx_n = 0;
+  cli(2, "blind", "close");
+  const TxRec *last = &g_tx[g_tx_n - 1];
+  CHECK_EQ(((last->data[1 + 18] << 8) | last->data[1 + 19]), 0x2003);
+  CHECK_EQ(g_velux_nvm.blind_seq, 0x2004);
+  CHECK(g_rx_active);
+
+  // Stale wall-switch press behind our counter: ignored (monotonic guard)
+  velux_build_28b_frame(TEST_ADDR, TEST_KEY, 0x1F00, 0x00, f28);
+  stream_add_frame(f28, 28, 5, 32);
+  stream_commit();
+  gen_before = g_velux_nvm.generation;
+  out_clear();
+  run_loop(400000);
+  CHECK_NOT_OUT("velux_remote");
+  CHECK_EQ(g_velux_nvm.blind_seq, 0x2004);
+  CHECK_EQ(g_velux_nvm.generation, gen_before);
+
+  // Wrong-key frame with valid CRC-16/KERMIT: rejected by 6-byte 1-Way MAC check
+  velux_build_28b_frame(TEST_ADDR, PAIR_MASTER, 0x3000, 0x00, f28);
+  stream_add_frame(f28, 28, 7, 32);
+  stream_commit();
+  out_clear();
+  run_loop(400000);
+  CHECK_NOT_OUT("velux_remote");
+  CHECK_EQ(g_velux_nvm.blind_seq, 0x2004);
+
+  // Unknown remote: ignored
+  const uint8_t other[3] = { 0x01, 0x02, 0x03 };
+  velux_build_28b_frame(other, TEST_KEY, 0x7000, 0xC8, f28);
+  stream_add_frame(f28, 28, 2, 32);
+  stream_commit();
+  out_clear();
+  run_loop(400000);
+  CHECK_NOT_OUT("velux_remote");
+  CHECK_EQ(g_velux_nvm.blind_seq, 0x2004);
+
+  // Corrupted frame (bad CRC): ignored
+  velux_build_28b_frame(TEST_ADDR, TEST_KEY, 0x7000, 0xC8, f28);
+  f28[15] ^= 0x40;
+  stream_add_frame(f28, 28, 2, 32);
+  stream_commit();
+  out_clear();
+  run_loop(400000);
+  CHECK_NOT_OUT("velux_remote");
+  CHECK_EQ(g_velux_nvm.blind_seq, 0x2004);
+
+  // Unsolicited 0x30 from unknown address is ignored when not pairing
+  uint8_t unknown_f34[34];
+  const uint8_t stranger[3] = { 0xfe, 0xdc, 0xba };
+  make_key_transfer_frame_dev(1, unknown_f34, stranger, PAIR_MASTER, 0x0777);
+  stream_add_frame(unknown_f34, 34, 4, 30);
+  stream_commit();
+  out_clear();
+  run_loop(400000);
+  CHECK_NOT_OUT("velux_paired");
+  CHECK_EQ(g_velux_nvm.sky_valid, 0);
+
+  // 16-bit modular wraparound (0xFFFE -> 0xFFFF -> 0x0000)
+  cli(3, "setseq", "blind", "0xFFFE");
+  velux_build_30b_frame(0, TEST_ADDR, TEST_KEY, 0xFFFE, f30);
+  velux_build_28b_frame(TEST_ADDR, TEST_KEY, 0xFFFF, 0x64, f28);
+  stream_add_frame(f30, 30, 10, 20);
+  stream_add_frame(f28, 28, 10, 20);
+  stream_commit();
+  out_clear();
+  run_loop(400000);
+  CHECK_OUT("\"event\":\"velux_remote\",\"device\":\"blind\"");
+  CHECK_EQ(g_velux_nvm.blind_seq, 0x0000);
+  CHECK_EQ(g_velux_nvm.blind_pos, 50);
+
+  // Packet-mode fallback path (Block 1 & 3) still decodes and syncs
+  railDataConfig.rxMethod = PACKET_MODE;
+  rxFifoManual = false;
+  velux_build_28b_frame(TEST_ADDR, TEST_KEY, 0x0005, 0x00, f28);
+  queue_packet_direct(f28, 28);
   out_clear();
   run_loop(300000);
   CHECK_OUT("\"event\":\"velux_remote\",\"device\":\"blind\"");
   CHECK_OUT("\"action\":\"open\"");
-  CHECK_EQ(g_velux_nvm.blind_seq, 0x2001);
+  CHECK_EQ(g_velux_nvm.blind_seq, 0x0006);
   CHECK_EQ(g_velux_nvm.blind_pos, 100);
-
-  // Our next command must continue from the synced counter
-  g_tx_n = 0;
-  cli(2, "blind", "close");
-  const TxRec *last = &g_tx[g_tx_n - 1];
-  CHECK_EQ(((last->data[1 + 18] << 8) | last->data[1 + 19]), 0x2002);
-
-  // Unknown remote: ignored
-  const uint8_t other[3] = { 0x01, 0x02, 0x03 };
-  velux_build_28b_frame(other, TEST_KEY, 0x7000, 0xC8, f);
-  queue_packet_direct(f, 28);
-  out_clear();
-  run_loop(300000);
-  CHECK_NOT_OUT("velux_remote");
-  CHECK_EQ(g_velux_nvm.blind_seq, 0x2003);
-
-  // Corrupted frame: ignored
-  velux_build_28b_frame(TEST_ADDR, TEST_KEY, 0x7000, 0xC8, f);
-  f[15] ^= 0x40;
-  queue_packet_direct(f, 28);
-  out_clear();
-  run_loop(300000);
-  CHECK_NOT_OUT("velux_remote");
-  CHECK_EQ(g_velux_nvm.blind_seq, 0x2003);
 }
 
 // =============================================================================

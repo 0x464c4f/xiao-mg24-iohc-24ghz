@@ -30,6 +30,7 @@ size_t g_feed_len, g_feed_pos;
 uint8_t g_pkt[256];
 uint16_t g_pkt_len;
 bool g_pkt_pending;
+bool g_rx_active;
 
 static uint8_t g_txfifo[64];
 static uint16_t g_txfifo_len;
@@ -43,6 +44,7 @@ void fake_reset(void)
   g_tx_n = 0;
   g_feed_len = g_feed_pos = 0;
   g_pkt_pending = false;
+  g_rx_active = false;
   packetsHeld = 0;
   g_rng_state = 0x13579BDFU;
   railDataConfig.txMethod = PACKET_MODE;
@@ -83,8 +85,8 @@ const char *sl_cli_get_argument_string(sl_cli_command_arg_t *a, int i) { return 
 // ---- clock: each call advances 3 us
 uint32_t RAIL_GetTime(void) { g_now += 3; return g_now; }
 
-// ---- radio control (no-ops)
-RAIL_Status_t RAIL_Idle(RAIL_Handle_t h, RAIL_IdleMode_t m, bool w) { (void)h; (void)m; (void)w; return 0; }
+// ---- radio control
+RAIL_Status_t RAIL_Idle(RAIL_Handle_t h, RAIL_IdleMode_t m, bool w) { (void)h; (void)m; (void)w; g_rx_active = false; return 0; }
 uint16_t RAIL_SetFixedLength(RAIL_Handle_t h, uint16_t l) { (void)h; return l; }
 void RAIL_ResetFifo(RAIL_Handle_t h, bool t, bool r) { (void)h; (void)t; (void)r; }
 RAIL_Status_t RAIL_ConfigData(RAIL_Handle_t h, const RAIL_DataConfig_t *c) { (void)h; (void)c; return 0; }
@@ -104,7 +106,7 @@ uint16_t RAIL_GetRadioEntropy(RAIL_Handle_t h, uint8_t *buffer, uint16_t bytes)
   }
   return bytes;
 }
-RAIL_Status_t RAIL_StartRx(RAIL_Handle_t h, uint16_t c, const void *s) { (void)h; (void)c; (void)s; return 0; }
+RAIL_Status_t RAIL_StartRx(RAIL_Handle_t h, uint16_t c, const void *s) { (void)h; (void)c; (void)s; g_rx_active = true; return 0; }
 
 // ---- TX recorder
 uint16_t RAIL_WriteTxFifo(RAIL_Handle_t h, const uint8_t *d, uint16_t len, bool reset)
@@ -118,6 +120,7 @@ uint16_t RAIL_WriteTxFifo(RAIL_Handle_t h, const uint8_t *d, uint16_t len, bool 
 RAIL_Status_t RAIL_StartTx(RAIL_Handle_t h, uint16_t ch, uint32_t opts, const void *s)
 {
   (void)h; (void)s;
+  g_rx_active = false;
   if (!(opts & RAIL_TX_OPTION_REMOVE_CRC) || g_tx_n >= FAKE_TX_MAX) {
     abort();
   }

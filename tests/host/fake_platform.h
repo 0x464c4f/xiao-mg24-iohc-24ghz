@@ -23,6 +23,7 @@ extern size_t g_feed_len, g_feed_pos;
 extern uint8_t g_pkt[256];
 extern uint16_t g_pkt_len;
 extern bool g_pkt_pending;
+extern bool g_rx_active;
 
 void fake_reset(void);
 #endif
